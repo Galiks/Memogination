@@ -471,6 +471,30 @@ func TestBulkAddSituations(t *testing.T) {
 	require.ErrorIs(t, err, engine.ErrNotAllowed)
 }
 
+func TestBulkAddSituationsInlineDelimiter(t *testing.T) {
+	c, _ := newCoordinator(t)
+	ctx := context.Background()
+
+	// The delimiter token splits situations anywhere in the text, not only on
+	// whole lines.
+	raw := "авыаыва * 3424 * ваыаыва"
+	res, err := c.BulkAddSituations(ctx, raw, "*", true)
+	require.NoError(t, err)
+	require.Equal(t, 3, res.Found)
+	require.Equal(t, 0, res.Duplicates)
+	require.Equal(t, 3, res.Added)
+
+	sits, err := c.ListSituations(ctx)
+	require.NoError(t, err)
+	var texts []string
+	for _, s := range sits {
+		if s.Source == "bulk" {
+			texts = append(texts, s.Text)
+		}
+	}
+	require.ElementsMatch(t, []string{"авыаыва", "3424", "ваыаыва"}, texts)
+}
+
 func TestProjectionSecurityVoting(t *testing.T) {
 	c, _ := newCoordinator(t)
 	ctx := context.Background()

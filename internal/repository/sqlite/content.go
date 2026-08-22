@@ -30,6 +30,12 @@ func (q queries) GetMemeBySHA256(ctx context.Context, sha256 string) (content.Me
 		FROM memes WHERE sha256 = ?`, sha256))
 }
 
+func (q queries) GetMemeByOriginalFilename(ctx context.Context, filename string) (content.Meme, error) {
+	return q.scanMeme(q.q.QueryRowContext(ctx, `
+		SELECT id, original_path, screen_path, thumbnail_path, original_filename, mime_type, sha256, enabled, source, created_at
+		FROM memes WHERE original_filename = ?`, filename))
+}
+
 func (q queries) UpdateMeme(ctx context.Context, m content.Meme) error {
 	_, err := q.q.ExecContext(ctx, `
 		UPDATE memes SET original_path = ?, screen_path = ?, thumbnail_path = ?, original_filename = ?,

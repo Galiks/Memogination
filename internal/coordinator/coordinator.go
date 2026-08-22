@@ -739,6 +739,12 @@ func (c *Coordinator) GetMemeBySHA256(ctx context.Context, sha256 string) (conte
 	return c.repo.GetMemeBySHA256(ctx, sha256)
 }
 
+// GetMemeByOriginalFilename returns the meme with the given original filename,
+// or sql.ErrNoRows if none exists. It is used to replace a meme on re-upload.
+func (c *Coordinator) GetMemeByOriginalFilename(ctx context.Context, filename string) (content.Meme, error) {
+	return c.repo.GetMemeByOriginalFilename(ctx, filename)
+}
+
 // AddMeme creates a meme. Admin only.
 func (c *Coordinator) AddMeme(ctx context.Context, m content.Meme, isAdmin bool) error {
 	if !isAdmin {
@@ -844,29 +850,23 @@ func (c *Coordinator) BulkAddSituations(ctx context.Context, raw, delimiter stri
 	return result, nil
 }
 
-// parseBulk normalizes line endings, splits the text into situations on
-// delimiter lines, trims, and removes empty entries.
+// parseBulk normalizes line endings, splits the text into situations on the
+// delimiter token anywhere in the text, trims, and removes empty entries.
 func parseBulk(raw, delimiter string) []string {
 	normalized := strings.ReplaceAll(raw, "\r\n", "\n")
 	normalized = strings.ReplaceAll(normalized, "\r", "\n")
-	lines := strings.Split(normalized, "\n")
+	if delimiter == "" {
+		if text := strings.TrimSpace(normalized); text != "" {
+			return []string{text}
+		}
+		return nil
+	}
 	var situations []string
-	var current []string
-	flush := func() {
-		text := strings.TrimSpace(strings.Join(current, "\n"))
-		if text != "" {
+	for _, part := range strings.Split(normalized, delimiter) {
+		if text := strings.TrimSpace(part); text != "" {
 			situations = append(situations, text)
 		}
-		current = nil
 	}
-	for _, line := range lines {
-		if strings.TrimSpace(line) == delimiter {
-			flush()
-			continue
-		}
-		current = append(current, line)
-	}
-	flush()
 	return situations
 }
 

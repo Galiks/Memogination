@@ -327,3 +327,19 @@ func TestRoomSettingsUpsert(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 6, got.MaxPlayers)
 }
+
+func TestGetMemeByOriginalFilename(t *testing.T) {
+	db := newTestDB(t)
+	repo := New(db)
+	ctx := context.Background()
+
+	m := newMeme()
+	require.NoError(t, repo.CreateMeme(ctx, m))
+
+	got, err := repo.GetMemeByOriginalFilename(ctx, m.OriginalFilename)
+	require.NoError(t, err)
+	assert.Equal(t, m.ID, got.ID)
+
+	_, err = repo.GetMemeByOriginalFilename(ctx, "missing.png")
+	require.ErrorIs(t, err, sql.ErrNoRows)
+}

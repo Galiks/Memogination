@@ -501,9 +501,35 @@ func (s *Server) handleCreateMeme(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Re-uploading a meme under the same filename replaces the existing one
+	// instead of erroring. Remove the replaced files and update the record.
+	if existing, derr := s.Coordinator.GetMemeByOriginalFilename(r.Context(), header.Filename); derr == nil && existing.ID != "" {
+		old := &media.Result{
+			OriginalPath:  existing.OriginalPath,
+			ScreenPath:    existing.ScreenPath,
+			ThumbnailPath: existing.ThumbnailPath,
+		}
+		existing.OriginalPath = res.OriginalPath
+		existing.ScreenPath = res.ScreenPath
+		existing.ThumbnailPath = res.ThumbnailPath
+		existing.OriginalFilename = header.Filename
+		existing.MimeType = res.MimeType
+		existing.SHA256 = res.SHA256
+		existing.Enabled = true
+		existing.Source = "upload"
+		if err := s.Coordinator.UpdateMeme(r.Context(), existing, true); err != nil {
+			s.Media.RemoveResult(res)
+			s.writeError(w, err)
+			return
+		}
+		s.Media.RemoveResult(old)
+		writeJSON(w, http.StatusOK, existing)
+		return
+	}
+
 	// Avoid orphaned files on duplicate upload: if a meme with the same
-	// SHA-256 already exists, remove the just-written files and report the
-	// duplicate instead of persisting a second copy.
+	// SHA-256 already exists under a different name, remove the just-written
+	// files and report the duplicate instead of persisting a second copy.
 	if existing, derr := s.Coordinator.GetMemeBySHA256(r.Context(), res.SHA256); derr == nil && existing.ID != "" {
 		s.Media.RemoveResult(res)
 		s.writeError(w, engine.ErrDuplicateMeme)

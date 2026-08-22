@@ -119,6 +119,7 @@ type Tx interface {
 	CreateMeme(ctx context.Context, m content.Meme) error
 	GetMeme(ctx context.Context, id string) (content.Meme, error)
 	GetMemeBySHA256(ctx context.Context, sha256 string) (content.Meme, error)
+	GetMemeByOriginalFilename(ctx context.Context, filename string) (content.Meme, error)
 	ListMemes(ctx context.Context) ([]content.Meme, error)
 	UpdateMeme(ctx context.Context, m content.Meme) error
 	DeleteMeme(ctx context.Context, id string) error
