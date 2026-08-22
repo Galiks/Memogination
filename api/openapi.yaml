@@ -1,0 +1,554 @@
+openapi: 3.0.3
+info:
+  title: Memomarium API
+  version: 1.0.0
+  description: HTTP/REST API for the Memomarium local multiplayer party game.
+servers:
+  - url: http://localhost:8080
+paths:
+  /api/v1/health:
+    get:
+      summary: Application health
+      operationId: health
+      responses:
+        '200':
+          description: Health status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+  /api/v1/network/addresses:
+    get:
+      summary: LAN addresses reachable by other players
+      operationId: networkAddresses
+      responses:
+        '200':
+          description: List of LAN URLs
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  addresses:
+                    type: array
+                    items:
+                      type: string
+                      example: http://192.168.1.15:8080
+  /api/v1/admin/bootstrap:
+    post:
+      summary: Create a Local Admin session (loopback only)
+      operationId: adminBootstrap
+      responses:
+        '200':
+          description: Admin session created; sets memomarium_admin cookie
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  isAdmin:
+                    type: boolean
+                    example: true
+        '403':
+          $ref: '#/components/responses/Error'
+  /api/v1/rooms:
+    post:
+      summary: Create a new room
+      operationId: createRoom
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+      responses:
+        '201':
+          description: Created room with join code
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  code:
+                    type: string
+                  revision:
+                    type: integer
+                  state:
+                    type: string
+                  createdAt:
+                    type: string
+                    format: date-time
+        '400':
+          $ref: '#/components/responses/Error'
+  /api/v1/rooms/{code}/join:
+    post:
+      summary: Join a room as a player
+      operationId: joinRoom
+      parameters:
+        - $ref: '#/components/parameters/Code'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+      responses:
+        '200':
+          description: Player snapshot; sets memomarium_session cookie
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GameSnapshot'
+        '400':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+  /api/v1/rooms/{code}/reconnect:
+    post:
+      summary: Reconnect an existing player session
+      operationId: reconnect
+      parameters:
+        - $ref: '#/components/parameters/Code'
+      responses:
+        '200':
+          description: Player snapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GameSnapshot'
+        '400':
+          $ref: '#/components/responses/Error'
+  /api/v1/rooms/{code}/commands:
+    post:
+      summary: Apply a game command
+      operationId: command
+      parameters:
+        - $ref: '#/components/parameters/Code'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type]
+              properties:
+                commandId:
+                  type: string
+                expectedRevision:
+                  type: integer
+                type:
+                  type: string
+                  example: SUBMIT_VOTE
+                payload:
+                  type: object
+      responses:
+        '200':
+          description: Events and resulting snapshot
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  events:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Event'
+                  snapshot:
+                    $ref: '#/components/schemas/GameSnapshot'
+        '409':
+          description: State changed; currentRevision provided
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '400':
+          $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Error'
+  /api/v1/rooms/{code}/state:
+    get:
+      summary: Current snapshot for the requester
+      operationId: roomState
+      parameters:
+        - $ref: '#/components/parameters/Code'
+        - name: screen
+          in: query
+          schema:
+            type: string
+            enum: ['1']
+          description: Request the read-only screen projection
+      responses:
+        '200':
+          description: Viewer-appropriate snapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GameSnapshot'
+        '400':
+          $ref: '#/components/responses/Error'
+  /api/v1/rooms/{code}/settings:
+    get:
+      summary: Get room settings
+      operationId: getSettings
+      parameters:
+        - $ref: '#/components/parameters/Code'
+      responses:
+        '200':
+          description: Room settings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoomSettings'
+    put:
+      summary: Update room settings (admin only)
+      operationId: updateSettings
+      parameters:
+        - $ref: '#/components/parameters/Code'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RoomSettings'
+      responses:
+        '200':
+          description: Updated settings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoomSettings'
+        '403':
+          $ref: '#/components/responses/Error'
+  /api/v1/rooms/{code}/ws:
+    get:
+      summary: WebSocket connection for live updates
+      operationId: roomWS
+      parameters:
+        - $ref: '#/components/parameters/Code'
+        - name: screen
+          in: query
+          schema:
+            type: string
+            enum: ['1']
+          description: Connect as a read-only screen viewer
+      responses:
+        '101':
+          description: WebSocket upgrade
+        '400':
+          $ref: '#/components/responses/Error'
+  /api/v1/memes:
+    get:
+      summary: List memes
+      operationId: listMemes
+      responses:
+        '200':
+          description: Memes
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Meme'
+    post:
+      summary: Upload a meme (admin only)
+      operationId: createMeme
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '201':
+          description: Created meme
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Meme'
+        '403':
+          $ref: '#/components/responses/Error'
+  /api/v1/memes/{id}:
+    delete:
+      summary: Delete a meme (admin only)
+      operationId: deleteMeme
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Deleted
+        '403':
+          $ref: '#/components/responses/Error'
+    patch:
+      summary: Update a meme (admin only)
+      operationId: updateMeme
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                enabled:
+                  type: boolean
+      responses:
+        '200':
+          description: Updated meme
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Meme'
+        '403':
+          $ref: '#/components/responses/Error'
+  /api/v1/situations:
+    get:
+      summary: List situations
+      operationId: listSituations
+      responses:
+        '200':
+          description: Situations
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Situation'
+    post:
+      summary: Create a situation (admin only)
+      operationId: createSituation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text:
+                  type: string
+                enabled:
+                  type: boolean
+      responses:
+        '201':
+          description: Created situation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Situation'
+        '403':
+          $ref: '#/components/responses/Error'
+  /api/v1/situations/bulk:
+    post:
+      summary: Bulk import situations (admin only)
+      operationId: bulkSituations
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text:
+                  type: string
+                delimiter:
+                  type: string
+                  default: '*'
+      responses:
+        '201':
+          description: Import result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  found:
+                    type: integer
+                  duplicates:
+                    type: integer
+                  added:
+                    type: integer
+        '403':
+          $ref: '#/components/responses/Error'
+  /api/v1/situations/{id}:
+    delete:
+      summary: Delete a situation (admin only)
+      operationId: deleteSituation
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Deleted
+        '403':
+          $ref: '#/components/responses/Error'
+    patch:
+      summary: Update a situation (admin only)
+      operationId: updateSituation
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                text:
+                  type: string
+                enabled:
+                  type: boolean
+      responses:
+        '200':
+          description: Updated situation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Situation'
+        '403':
+          $ref: '#/components/responses/Error'
+components:
+  parameters:
+    Code:
+      name: code
+      in: path
+      required: true
+      schema:
+        type: string
+    Id:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+  responses:
+    Error:
+      description: Error response
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+  schemas:
+    Error:
+      type: object
+      properties:
+        code:
+          type: string
+          example: ROOM_NOT_FOUND
+        message:
+          type: string
+        details:
+          type: object
+        currentRevision:
+          type: integer
+    Health:
+      type: object
+      properties:
+        process_alive:
+          type: boolean
+        sqlite:
+          type: boolean
+        data_dir_writable:
+          type: boolean
+        media_dir_writable:
+          type: boolean
+    GameSnapshot:
+      type: object
+      properties:
+        revision:
+          type: integer
+        serverTime:
+          type: string
+        room:
+          type: object
+        game:
+          type: object
+          nullable: true
+        phase:
+          type: string
+        actor:
+          type: object
+        phaseData:
+          type: object
+    Event:
+      type: object
+      properties:
+        type:
+          type: string
+        revision:
+          type: integer
+        data:
+          type: object
+    RoomSettings:
+      type: object
+      properties:
+        minPlayers:
+          type: integer
+        maxPlayers:
+          type: integer
+        handSize:
+          type: integer
+        preparationTimeoutSeconds:
+          type: integer
+        roundSelectionTimeoutSeconds:
+          type: integer
+        votingTimeoutSeconds:
+          type: integer
+        infiniteGame:
+          type: boolean
+        situationSeparator:
+          type: string
+        scoreConfig:
+          type: object
+    Meme:
+      type: object
+      properties:
+        id:
+          type: string
+        originalPath:
+          type: string
+        screenPath:
+          type: string
+        thumbnailPath:
+          type: string
+        originalFilename:
+          type: string
+        mimeType:
+          type: string
+        sha256:
+          type: string
+        enabled:
+          type: boolean
+        source:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+    Situation:
+      type: object
+      properties:
+        id:
+          type: string
+        text:
+          type: string
+        enabled:
+          type: boolean
+        source:
+          type: string
+        createdAt:
+          type: string
+          format: date-time

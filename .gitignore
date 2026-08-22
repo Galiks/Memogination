@@ -1,0 +1,28 @@
+# --- Go ---
+*.exe
+*.test
+*.out
+
+# --- Build output ---
+/dist/
+web/dist/*
+!web/dist/index.html
+
+# --- Node ---
+web/node_modules/
+web/.vite/
+web/coverage/
+web/playwright-report/
+web/test-results/
+
+# --- Local runtime data ---
+/data/
+*.db
+*.db-wal
+*.db-shm
+
+# --- OS / editors ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
