@@ -143,10 +143,18 @@ func (c *Coordinator) JoinRoom(ctx context.Context, code, name string) (string, 
 		if err != nil {
 			return err
 		}
-		if len(players) >= settings.MaxPlayers {
+		// A player who left or was kicked (LeftAt set) no longer occupies a
+		// seat: they must not count toward MaxPlayers or block their name.
+		active := make([]player.Player, 0, len(players))
+		for _, p := range players {
+			if p.LeftAt == nil {
+				active = append(active, p)
+			}
+		}
+		if len(active) >= settings.MaxPlayers {
 			return engine.ErrRoomFull
 		}
-		for _, p := range players {
+		for _, p := range active {
 			if strings.EqualFold(p.Name, name) {
 				return engine.ErrInvalidName
 			}
@@ -469,12 +477,26 @@ func (c *Coordinator) SaveAggregate(ctx context.Context, tx repository.Tx, agg *
 		return err
 	}
 	for _, p := range agg.Players {
+		// A player who left or was kicked while there was no active game
+		// (LOBBY) is removed entirely so their seat and name free up.
+		if agg.Game == nil && p.LeftAt != nil {
+			if err := tx.DeletePlayerSessionsByPlayer(ctx, p.ID); err != nil {
+				return err
+			}
+			if err := tx.DeletePlayer(ctx, p.ID); err != nil {
+				return err
+			}
+			continue
+		}
 		if err := tx.UpdatePlayer(ctx, *p); err != nil {
 			return err
 		}
 	}
 	if agg.Game == nil {
-		return nil
+		// No game: this is either a brand-new room or a room that was reset
+		// with START_NEW_GAME. In the latter case stale game rows would
+		// resurrect the finished game on the next load, so remove them.
+		return tx.DeleteGameByRoom(ctx, agg.Room.ID)
 	}
 	// The game may be new (START_GAME) or already persisted; upsert it.
 	if _, err := tx.GetGame(ctx, agg.Game.ID); err != nil {
@@ -690,6 +712,77 @@ func (c *Coordinator) GetRoomByCode(ctx context.Context, code string) (*room.Roo
 		return nil, err
 	}
 	return &r, nil
+}
+
+// RoomSummary is the admin-facing representation of a room in the room
+// management list.
+type RoomSummary struct {
+	ID          string     `json:"id"`
+	Code        string     `json:"code"`
+	State       string     `json:"state"`
+	Revision    int        `json:"revision"`
+	CreatedAt   time.Time  `json:"createdAt"`
+	ClosedAt    *time.Time `json:"closedAt"`
+	PlayerCount int        `json:"playerCount"`
+}
+
+// ListRooms returns a summary of every room (oldest first). It is used by the
+// admin room-management UI.
+func (c *Coordinator) ListRooms(ctx context.Context) ([]RoomSummary, error) {
+	rooms, err := c.repo.ListRooms(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]RoomSummary, 0, len(rooms))
+	for _, r := range rooms {
+		players, err := c.repo.ListPlayersByRoom(ctx, r.ID)
+		if err != nil {
+			return nil, err
+		}
+		active := 0
+		for _, p := range players {
+			if p.LeftAt == nil {
+				active++
+			}
+		}
+		out = append(out, RoomSummary{
+			ID:          r.ID,
+			Code:        r.Code,
+			State:       string(r.State),
+			Revision:    r.Revision,
+			CreatedAt:   r.CreatedAt,
+			ClosedAt:    r.ClosedAt,
+			PlayerCount: active,
+		})
+	}
+	return out, nil
+}
+
+// DeleteRoom removes a room and all of its data. Admin only.
+func (c *Coordinator) DeleteRoom(ctx context.Context, code string, isAdmin bool) error {
+	if !isAdmin {
+		return engine.ErrNotAllowed
+	}
+	r, err := c.repo.GetRoomByCode(ctx, code)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return engine.ErrRoomNotFound
+		}
+		return err
+	}
+	lock := c.lockFor(r.ID)
+	lock.mu.Lock()
+	defer lock.mu.Unlock()
+	if err := c.repo.WithTx(ctx, func(tx repository.Tx) error {
+		return tx.DeleteRoom(ctx, r.ID)
+	}); err != nil {
+		return err
+	}
+	delete(c.rooms, r.ID)
+	if c.broadcaster != nil {
+		c.broadcaster.Broadcast(r.ID, map[string]any{"type": "ROOM_DELETED"})
+	}
+	return nil
 }
 
 // GetSettings returns the room settings for the given code.

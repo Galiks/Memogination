@@ -86,6 +86,51 @@ paths:
                     format: date-time
         '400':
           $ref: '#/components/responses/Error'
+    get:
+      summary: List all rooms (admin only)
+      operationId: listRooms
+      responses:
+        '200':
+          description: Room summaries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id:
+                      type: string
+                    code:
+                      type: string
+                    state:
+                      type: string
+                    revision:
+                      type: integer
+                    createdAt:
+                      type: string
+                      format: date-time
+                    closedAt:
+                      type: string
+                      format: date-time
+                      nullable: true
+                    playerCount:
+                      type: integer
+        '403':
+          $ref: '#/components/responses/Error'
+  /api/v1/rooms/{code}:
+    delete:
+      summary: Delete a room and all of its data (admin only)
+      operationId: deleteRoom
+      parameters:
+        - $ref: '#/components/parameters/Code'
+      responses:
+        '200':
+          description: Deleted
+        '403':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
   /api/v1/rooms/{code}/join:
     post:
       summary: Join a room as a player

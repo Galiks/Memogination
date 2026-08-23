@@ -31,13 +31,24 @@ type Tx interface {
 	GetRoom(ctx context.Context, id string) (room.Room, error)
 	GetRoomByCode(ctx context.Context, code string) (room.Room, error)
 	ListRoomsByState(ctx context.Context, state room.RoomState) ([]room.Room, error)
+	ListRooms(ctx context.Context) ([]room.Room, error)
 	UpdateRoom(ctx context.Context, r room.Room) error
+	// DeleteRoom removes a room and all of its data (game state, sessions,
+	// players, settings, processed commands) in FK-safe order.
+	DeleteRoom(ctx context.Context, roomID string) error
+	// DeleteGameByRoom removes all games of a room and their child rows.
+	DeleteGameByRoom(ctx context.Context, roomID string) error
 
 	// Players.
 	CreatePlayer(ctx context.Context, p player.Player) error
 	GetPlayer(ctx context.Context, id string) (player.Player, error)
 	ListPlayersByRoom(ctx context.Context, roomID string) ([]player.Player, error)
 	UpdatePlayer(ctx context.Context, p player.Player) error
+	// DeletePlayer removes a player row. The caller must have removed the
+	// player's sessions first.
+	DeletePlayer(ctx context.Context, id string) error
+	// DeletePlayerSessionsByPlayer removes every session of a player.
+	DeletePlayerSessionsByPlayer(ctx context.Context, playerID string) error
 
 	// Sessions.
 	CreateSession(ctx context.Context, s player.PlayerSession) error

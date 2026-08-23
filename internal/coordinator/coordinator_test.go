@@ -2,6 +2,7 @@ package coordinator_test
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"path/filepath"
 	"sync"
@@ -600,4 +601,161 @@ func TestCheckOverdueDeadlinesAdvancesPhase(t *testing.T) {
 	agg3, err := c1.LoadAggregate(ctx, r.ID)
 	require.NoError(t, err)
 	require.Equal(t, game.PhaseRoundSelection, agg3.Phase)
+}
+
+func TestKickPlayerRemovesFromLobbyAndFreesSlot(t *testing.T) {
+	c, _ := newCoordinator(t)
+	ctx := context.Background()
+	r, err := c.CreateRoom(ctx, "Host")
+	require.NoError(t, err)
+	players := joinPlayers(t, c, r.ID, r.Code, "Alice", "Bob", "Carol")
+	require.Len(t, players, 3)
+
+	// Admin kicks Carol (in LOBBY).
+	_, snap, err := c.HandleCommand(ctx, r.Code, engine.Command{
+		Type:      engine.CommandKickPlayer,
+		CommandID: "kick-1",
+		Payload:   map[string]any{"playerId": players[2].playerID},
+		Now:       time.Now().UTC(),
+	}, 0, "", true)
+	require.NoError(t, err)
+
+	// Carol disappears from the room player list.
+	require.Len(t, snap.Players, 2)
+	for _, p := range snap.Players {
+		require.NotEqual(t, players[2].playerID, p.ID)
+	}
+
+	// The freed slot can be re-used and the kicked name re-used.
+	_, snap2, err := c.JoinRoom(ctx, r.Code, "Carol")
+	require.NoError(t, err)
+	require.Len(t, snap2.Players, 3)
+}
+
+func TestKickPlayerDuringGameMarksLeftInProjection(t *testing.T) {
+	c, _ := newCoordinator(t)
+	ctx := context.Background()
+	r, err := c.CreateRoom(ctx, "Host")
+	require.NoError(t, err)
+	players := joinPlayers(t, c, r.ID, r.Code, "Alice", "Bob", "Carol")
+	host := players[0].playerID
+
+	f := newFlow(t, c, r.ID, r.Code)
+	f.cmd("s", engine.CommandStartGame, host, false, nil)
+	require.Equal(t, string(game.PhasePreparation), f.phase())
+
+	// Kicking a player mid-game must remove them from the room player list too.
+	agg, err := c.LoadAggregate(ctx, r.ID)
+	require.NoError(t, err)
+	gp := agg.GamePlayerByPlayerID(players[2].playerID)
+	require.NotNil(t, gp)
+	snap := f.cmd("kick-mid", engine.CommandKickPlayer, "", true, map[string]any{"playerId": players[2].playerID})
+	require.Len(t, snap.Players, 2)
+	// The game player is marked LEFT so they can no longer act.
+	agg2, err := c.LoadAggregate(ctx, r.ID)
+	require.NoError(t, err)
+	require.Equal(t, game.ParticipationLeft, agg2.GamePlayerByPlayerID(players[2].playerID).ParticipationStatus)
+}
+
+func TestStartNewGameResetsRoomToLobby(t *testing.T) {
+	c, _ := newCoordinator(t)
+	ctx := context.Background()
+	r, err := c.CreateRoom(ctx, "Host")
+	require.NoError(t, err)
+	players := joinPlayers(t, c, r.ID, r.Code, "Alice", "Bob", "Carol", "Dave")
+	host := players[0].playerID
+
+	f := newFlow(t, c, r.ID, r.Code)
+	f.cmd("s", engine.CommandStartGame, host, false, nil)
+	for _, p := range players {
+		hand := handFor(t, c, r.ID, p.playerID, engine.HandKindPreparation)
+		f.cmd("prep-"+p.playerID, engine.CommandSubmitPreparation, p.playerID, false, map[string]any{"situationText": "Situation 0", "memeId": hand[0]})
+	}
+	require.Equal(t, string(game.PhaseRoundSelection), f.phase())
+
+	// Play 4 rounds so the game finishes.
+	for roundIdx := 0; roundIdx < 4; roundIdx++ {
+		active := activePlayerID(t, c, r.ID)
+		for _, p := range players {
+			if p.playerID == active {
+				continue
+			}
+			hand := handFor(t, c, r.ID, p.playerID, engine.HandKindRound)
+			f.cmd("sub-"+p.playerID+"-"+fmt.Sprint(roundIdx), engine.CommandSubmitRoundMeme, p.playerID, false, map[string]any{"memeId": hand[0]})
+		}
+		orig := originalOption(t, c, r.ID)
+		for _, p := range players {
+			if p.playerID == active {
+				continue
+			}
+			f.cmd("vote-"+p.playerID+"-"+fmt.Sprint(roundIdx), engine.CommandSubmitVote, p.playerID, false, map[string]any{"voteOptionId": orig.ID})
+		}
+		if roundIdx < 3 {
+			f.cmd("next-"+fmt.Sprint(roundIdx), engine.CommandNextRound, host, false, nil)
+		}
+	}
+	f.cmd("next-final", engine.CommandNextRound, host, false, nil)
+	aggBefore, err := c.LoadAggregate(ctx, r.ID)
+	require.NoError(t, err)
+	require.Equal(t, room.StateClosed, aggBefore.Room.State)
+	require.Equal(t, game.PhaseGameResults, aggBefore.Phase)
+
+	// Non-admin cannot reset.
+	_, _, err = c.HandleCommand(ctx, r.Code, engine.Command{Type: engine.CommandStartNewGame, CommandID: "ng-noadmin", Now: time.Now().UTC()}, f.rev, host, false)
+	require.ErrorIs(t, err, engine.ErrNotAllowed)
+
+	// Admin resets the room back to LOBBY.
+	snap := f.cmd("ng", engine.CommandStartNewGame, "", true, nil)
+	require.Equal(t, string(room.StateLobby), snap.Room.State)
+	require.Nil(t, snap.Game)
+
+	// The old game rows must be gone so the room stays in LOBBY on reload.
+	agg, err := c.LoadAggregate(ctx, r.ID)
+	require.NoError(t, err)
+	require.Equal(t, room.StateLobby, agg.Room.State)
+	require.Nil(t, agg.Game)
+	require.Len(t, agg.ActivePlayers(), 4)
+	require.Equal(t, game.GamePhase(""), agg.Phase)
+
+	// A fresh game can be started again.
+	snap2 := f.cmd("start-again", engine.CommandStartGame, host, false, nil)
+	require.Equal(t, string(game.PhasePreparation), snap2.Phase)
+	require.NotNil(t, snap2.Game)
+}
+
+func TestListRoomsAndDeleteRoom(t *testing.T) {
+	c, repo := newCoordinator(t)
+	ctx := context.Background()
+
+	r1, err := c.CreateRoom(ctx, "Host")
+	require.NoError(t, err)
+	r2, err := c.CreateRoom(ctx, "Host")
+	require.NoError(t, err)
+	joinPlayers(t, c, r1.ID, r1.Code, "Alice", "Bob")
+
+	rooms, err := c.ListRooms(ctx)
+	require.NoError(t, err)
+	require.Len(t, rooms, 2)
+	found := false
+	for _, rs := range rooms {
+		if rs.Code == r1.Code {
+			found = true
+			require.Equal(t, 2, rs.PlayerCount)
+		}
+	}
+	require.True(t, found)
+
+	// Non-admin cannot delete.
+	require.ErrorIs(t, c.DeleteRoom(ctx, r2.Code, false), engine.ErrNotAllowed)
+
+	// Admin deletes room 2.
+	require.NoError(t, c.DeleteRoom(ctx, r2.Code, true))
+	_, err = repo.GetRoomByCode(ctx, r2.Code)
+	require.ErrorIs(t, err, sql.ErrNoRows)
+
+	// Room 1 still exists.
+	require.NoError(t, c.DeleteRoom(ctx, r1.Code, true))
+	rooms, err = c.ListRooms(ctx)
+	require.NoError(t, err)
+	require.Empty(t, rooms)
 }

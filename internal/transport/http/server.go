@@ -72,7 +72,9 @@ func (s *Server) Routes() http.Handler {
 		r.Post("/admin/bootstrap", s.handleAdminBootstrap)
 
 		r.Post("/rooms", s.handleCreateRoom)
+		r.Get("/rooms", s.handleListRooms)
 		r.Route("/rooms/{code}", func(r chi.Router) {
+			r.Delete("/", s.handleDeleteRoom)
 			r.Post("/join", s.handleJoin)
 			r.Post("/reconnect", s.handleReconnect)
 			r.Post("/commands", s.handleCommands)
@@ -240,6 +242,34 @@ func (s *Server) handleCreateRoom(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, room)
+}
+
+// handleListRooms returns a summary of every room. Admin only.
+func (s *Server) handleListRooms(w http.ResponseWriter, r *http.Request) {
+	if !s.isAdmin(r) {
+		s.writeError(w, engine.ErrNotAllowed)
+		return
+	}
+	rooms, err := s.Coordinator.ListRooms(r.Context())
+	if err != nil {
+		s.writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, rooms)
+}
+
+// handleDeleteRoom deletes a room and all of its data. Admin only.
+func (s *Server) handleDeleteRoom(w http.ResponseWriter, r *http.Request) {
+	if !s.isAdmin(r) {
+		s.writeError(w, engine.ErrNotAllowed)
+		return
+	}
+	code := chi.URLParam(r, "code")
+	if err := s.Coordinator.DeleteRoom(r.Context(), code, true); err != nil {
+		s.writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": true})
 }
 
 func (s *Server) handleJoin(w http.ResponseWriter, r *http.Request) {

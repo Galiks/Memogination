@@ -14,6 +14,16 @@ export interface RoomDTO {
   revision: number
 }
 
+export interface RoomSummary {
+  id: string
+  code: string
+  state: string
+  revision: number
+  createdAt: string
+  closedAt: string | null
+  playerCount: number
+}
+
 export interface ScoreConfigDTO {
   allGuessedActivePlayer: number
   allGuessedGuesser: number

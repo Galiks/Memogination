@@ -43,6 +43,8 @@ func (e *Engine) Handle(ctx context.Context, agg *Aggregate, cmd Command) ([]Eve
 		return e.kickPlayer(ctx, agg, cmd)
 	case CommandTimeoutPhase:
 		return e.timeoutPhase(ctx, agg, cmd)
+	case CommandStartNewGame:
+		return e.startNewGame(ctx, agg, cmd)
 	default:
 		return nil, ErrInvalidCommand
 	}

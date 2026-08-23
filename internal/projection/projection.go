@@ -201,12 +201,16 @@ func roomDTO(r *room.Room) RoomDTO {
 
 // roomPlayersDTO returns the room players sorted by join time. It is populated
 // regardless of whether a game has started so the LOBBY view can show who has
-// joined.
+// joined. Players who have left or been kicked (LeftAt set) are excluded so
+// they disappear from every client's player list.
 func roomPlayersDTO(agg *engine.Aggregate) []RoomPlayerDTO {
 	sorted := append([]*player.Player(nil), agg.Players...)
 	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].JoinedAt.Before(sorted[j].JoinedAt) })
 	out := make([]RoomPlayerDTO, 0, len(sorted))
 	for _, p := range sorted {
+		if p.LeftAt != nil {
+			continue
+		}
 		out = append(out, RoomPlayerDTO{
 			ID:        p.ID,
 			Name:      p.Name,

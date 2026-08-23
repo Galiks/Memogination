@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import type { GameSettingsDTO } from '@/types/api'
+import type { GameSettingsDTO, RoomSummary } from '@/types/api'
 import { ApiError, apiClient } from '@/services/apiClient'
 import { useGameSessionStore } from '@/stores/gameSession'
 import { useConnectionStore } from '@/stores/connection'
@@ -26,6 +26,10 @@ const createError = ref('')
 const actionError = ref('')
 const settingsError = ref('')
 
+const rooms = ref<RoomSummary[]>([])
+const roomsError = ref('')
+const deletingCode = ref('')
+
 const addresses = ref<string[]>([])
 const selectedAddress = ref('')
 
@@ -36,6 +40,7 @@ const game = computed(() => snapshot.value?.game)
 
 const isLobby = computed(() => roomState.value === 'LOBBY')
 const isInGame = computed(() => roomState.value === 'IN_GAME')
+const isClosed = computed(() => roomState.value === 'CLOSED')
 
 const qrUrl = computed(() =>
   roomCode.value && selectedAddress.value ? `${selectedAddress.value}/play/${roomCode.value}` : '',
@@ -50,6 +55,19 @@ const canStart = computed(() => {
 const activePhase = computed(() => {
   return ['PREPARATION', 'ROUND_SELECTION', 'ROUND_VOTING'].includes(phase.value)
 })
+
+function roomStateLabel(state: string): string {
+  switch (state) {
+    case 'LOBBY':
+      return 'Лобби'
+    case 'IN_GAME':
+      return 'Игра идёт'
+    case 'CLOSED':
+      return 'Закрыта'
+    default:
+      return state
+  }
+}
 
 async function loadAddresses(): Promise<void> {
   try {
@@ -66,12 +84,30 @@ function connectRoom(code: string): void {
   void session.resync()
 }
 
+function openRoom(code: string): void {
+  if (code === roomCode.value) return
+  connection.disconnect()
+  session.reset()
+  roomCode.value = code
+  localStorage.setItem(HOST_ROOM_KEY, code)
+  connectRoom(code)
+}
+
+async function loadRooms(): Promise<void> {
+  try {
+    rooms.value = await apiClient.listRooms()
+  } catch {
+    // ignore: the management list is best-effort
+  }
+}
+
 async function bootstrap(): Promise<void> {
   try {
     const res = await apiClient.adminBootstrap()
     isAdmin.value = res.isAdmin
     if (res.isAdmin) {
       await loadAddresses()
+      await loadRooms()
       const saved = localStorage.getItem(HOST_ROOM_KEY)
       if (saved) {
         roomCode.value = saved
@@ -91,13 +127,36 @@ async function createRoom(): Promise<void> {
   createError.value = ''
   try {
     const room = await apiClient.createRoom('Host')
+    connection.disconnect()
+    session.reset()
     roomCode.value = room.code
     localStorage.setItem(HOST_ROOM_KEY, room.code)
     connectRoom(room.code)
+    await loadRooms()
   } catch (err) {
     createError.value = err instanceof Error ? err.message : 'Не удалось создать комнату'
   } finally {
     creating.value = false
+  }
+}
+
+async function deleteRoom(code: string): Promise<void> {
+  if (!window.confirm(`Удалить комнату ${code}? Все данные комнаты будут удалены безвозвратно.`)) return
+  deletingCode.value = code
+  roomsError.value = ''
+  try {
+    await apiClient.deleteRoom(code)
+    if (code === roomCode.value) {
+      connection.disconnect()
+      session.reset()
+      localStorage.removeItem(HOST_ROOM_KEY)
+      roomCode.value = ''
+    }
+    await loadRooms()
+  } catch (err) {
+    roomsError.value = err instanceof Error ? err.message : 'Не удалось удалить комнату'
+  } finally {
+    deletingCode.value = ''
   }
 }
 
@@ -113,6 +172,16 @@ async function runCommand(type: string, payload?: Record<string, unknown>): Prom
 async function kickPlayer(playerId: string): Promise<void> {
   if (!window.confirm('Кикнуть игрока?')) return
   await runCommand('KICK_PLAYER', { playerId })
+}
+
+async function startNewGame(): Promise<void> {
+  actionError.value = ''
+  try {
+    await sendCommand('START_NEW_GAME')
+    await sendCommand('START_GAME')
+  } catch (err) {
+    actionError.value = err instanceof Error ? err.message : 'Ошибка команды'
+  }
 }
 
 async function saveSettings(settings: GameSettingsDTO): Promise<void> {
@@ -154,13 +223,40 @@ onMounted(() => {
           {{ actionError }}
         </p>
 
-        <!-- No room yet -->
-        <AppCard v-if="!roomCode">
-          <h2 class="mb-3 text-lg font-semibold text-slate-900">Создать комнату</h2>
-          <AppButton size="lg" :disabled="creating" @click="createRoom">
-            {{ creating ? 'Создание…' : 'Создать комнату' }}
-          </AppButton>
-          <p v-if="createError" class="mt-3 text-sm text-red-600">{{ createError }}</p>
+        <!-- Room management -->
+        <AppCard class="mb-4">
+          <div class="mb-3 flex items-center justify-between">
+            <h2 class="text-sm font-semibold uppercase tracking-wide text-slate-400">Комнаты</h2>
+            <AppButton size="sm" :disabled="creating" @click="createRoom">
+              {{ creating ? 'Создание…' : 'Создать комнату' }}
+            </AppButton>
+          </div>
+          <p v-if="createError" class="mb-2 text-sm text-red-600">{{ createError }}</p>
+          <p v-if="roomsError" class="mb-2 text-sm text-red-600">{{ roomsError }}</p>
+          <ul v-if="rooms.length" class="divide-y divide-slate-100">
+            <li v-for="r in rooms" :key="r.id" class="flex items-center gap-3 py-2">
+              <span class="font-mono text-sm font-semibold text-slate-800">{{ r.code }}</span>
+              <span class="text-xs text-slate-500">
+                {{ roomStateLabel(r.state) }} · {{ r.playerCount }} игр.
+              </span>
+              <div class="flex-1" />
+              <AppButton v-if="r.code !== roomCode" variant="secondary" size="sm" @click="openRoom(r.code)">
+                Открыть
+              </AppButton>
+              <AppButton variant="danger" size="sm" :disabled="deletingCode === r.code" @click="deleteRoom(r.code)">
+                {{ deletingCode === r.code ? 'Удаление…' : 'Удалить' }}
+              </AppButton>
+            </li>
+          </ul>
+          <p v-else class="text-sm text-slate-400">Комнат пока нет</p>
+        </AppCard>
+
+        <!-- No room selected yet -->
+        <AppCard v-if="!roomCode" class="mb-4">
+          <h2 class="mb-3 text-lg font-semibold text-slate-900">Новая игра</h2>
+          <p class="text-sm text-slate-500">
+            Создайте комнату и поделитесь QR-кодом с игроками, чтобы начать.
+          </p>
         </AppCard>
 
         <!-- Room active -->
@@ -225,6 +321,17 @@ onMounted(() => {
             <p v-if="!canStart" class="mt-2 text-sm text-slate-400">
               Нужно минимум {{ snapshot?.settings.minPlayers }} игроков
             </p>
+          </AppCard>
+
+          <!-- Game over / restart -->
+          <AppCard v-if="isClosed" class="mb-4">
+            <h2 class="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-400">
+              Игра завершена
+            </h2>
+            <p class="mb-3 text-sm text-slate-600">
+              Хотите сыграть ещё раз с теми же игроками?
+            </p>
+            <AppButton size="lg" @click="startNewGame">Начать игру заново</AppButton>
           </AppCard>
 
           <!-- Settings -->
