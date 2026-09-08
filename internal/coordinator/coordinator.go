@@ -31,6 +31,12 @@ type Broadcaster interface {
 	Broadcast(roomID string, msg any)
 }
 
+// PlayerCloser is an optional Broadcaster capability: terminate a specific
+// player's live connection (used when a session is revoked on kick/leave).
+type PlayerCloser interface {
+	ClosePlayer(roomID, playerID string)
+}
+
 // roomLock serializes commands for a single room.
 type roomLock struct {
 	mu sync.Mutex
@@ -123,6 +129,12 @@ func (c *Coordinator) JoinRoom(ctx context.Context, code, name string) (string, 
 		}
 		return "", nil, err
 	}
+	// Players join the lobby. A room that is already in a game (or closed)
+	// cannot accept new participants: joining mid-game would create a spectator
+	// with no game participation (spec §3 flow: join → lobby → start).
+	if r.State == room.StateInGame {
+		return "", nil, engine.ErrGameAlreadyStarted
+	}
 	if r.State == room.StateClosed {
 		return "", nil, engine.ErrRoomFull
 	}
@@ -135,6 +147,19 @@ func (c *Coordinator) JoinRoom(ctx context.Context, code, name string) (string, 
 	var token string
 	var playerID string
 	err = c.repo.WithTx(ctx, func(tx repository.Tx) error {
+		// Re-check the room state inside the transaction and under the per-room
+		// lock: START_GAME could have committed between the pre-check above and
+		// lock acquisition, and the tx sees the authoritative committed state.
+		txRoom, err := tx.GetRoom(ctx, r.ID)
+		if err != nil {
+			return err
+		}
+		if txRoom.State == room.StateInGame {
+			return engine.ErrGameAlreadyStarted
+		}
+		if txRoom.State == room.StateClosed {
+			return engine.ErrRoomFull
+		}
 		players, err := tx.ListPlayersByRoom(ctx, r.ID)
 		if err != nil {
 			return err
@@ -232,6 +257,10 @@ func (c *Coordinator) Reconnect(ctx context.Context, code, token string) (*proje
 	if p.RoomID != r.ID {
 		return nil, engine.ErrPlayerNotFound
 	}
+	if p.LeftAt != nil {
+		// The player left or was kicked; their participation ended (spec §31).
+		return nil, engine.ErrPlayerAlreadyLeft
+	}
 	p.Connected = true
 	if err := c.repo.UpdatePlayer(ctx, p); err != nil {
 		return nil, err
@@ -282,6 +311,9 @@ func (c *Coordinator) HandleCommand(ctx context.Context, code string, cmd engine
 
 	var events []engine.Event
 	var snap *projection.GameSnapshot
+	// Set when a LEAVE_ROOM/KICK_PLAYER command revokes a player's session; the
+	// transport uses it to terminate that player's live connection after commit.
+	var revokedPlayerID string
 	err = c.repo.WithTx(ctx, func(tx repository.Tx) error {
 		if cmd.CommandID != "" {
 			processed, err := tx.IsProcessedCommand(ctx, cmd.CommandID)
@@ -324,6 +356,21 @@ func (c *Coordinator) HandleCommand(ctx context.Context, code string, cmd engine
 			}
 		}
 		snap = projection.PlayerSnapshot(agg, actorPlayerID, isAdmin)
+		// Leave and Kick permanently end a player's participation: revoke their
+		// sessions so they cannot reconnect (spec §31: "leftAt != null, session
+		// revoked"). This must be atomic with the leave itself.
+		if cmd.Type == engine.CommandLeaveRoom || cmd.Type == engine.CommandKickPlayer {
+			targetID := actorPlayerID
+			if cmd.Type == engine.CommandKickPlayer {
+				if id, ok := cmd.Payload["playerId"].(string); ok {
+					targetID = id
+				}
+			}
+			revokedPlayerID = targetID
+			if err := c.revokeSessions(ctx, tx, targetID); err != nil {
+				return err
+			}
+		}
 		return nil
 	})
 	if err != nil {
@@ -331,8 +378,40 @@ func (c *Coordinator) HandleCommand(ctx context.Context, code string, cmd engine
 	}
 	if c.broadcaster != nil {
 		c.broadcaster.Broadcast(r.ID, map[string]any{"type": "STATE_UPDATED", "revision": snap.Revision})
+		// Terminate the revoked player's live connection so their client stops
+		// reconnecting and returns to the join screen immediately. This runs
+		// asynchronously: the WebSocket close handshake can block until the
+		// peer acknowledges, and we must not hold the room lock that long.
+		if revokedPlayerID != "" {
+			if pc, ok := c.broadcaster.(PlayerCloser); ok {
+				go pc.ClosePlayer(r.ID, revokedPlayerID)
+			}
+		}
 	}
 	return events, snap, nil
+}
+
+// revokeSessions marks every non-revoked session of the given player as
+// revoked within the transaction.
+func (c *Coordinator) revokeSessions(ctx context.Context, tx repository.Tx, playerID string) error {
+	if playerID == "" {
+		return nil
+	}
+	sessions, err := tx.ListSessionsByPlayer(ctx, playerID)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	for _, s := range sessions {
+		if s.RevokedAt != nil {
+			continue
+		}
+		s.RevokedAt = &now
+		if err := tx.UpdateSession(ctx, s); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // LoadAggregate loads all entities for a room into an Aggregate, reconstructing
@@ -714,6 +793,30 @@ func (c *Coordinator) GetRoomByCode(ctx context.Context, code string) (*room.Roo
 	return &r, nil
 }
 
+// PlayerInRoom returns the player with the given id if they belong to the room
+// with the given code and have not left. It returns (nil, nil) when the player
+// is not in the room.
+func (c *Coordinator) PlayerInRoom(ctx context.Context, code, playerID string) (*player.Player, error) {
+	r, err := c.repo.GetRoomByCode(ctx, code)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, engine.ErrRoomNotFound
+		}
+		return nil, err
+	}
+	p, err := c.repo.GetPlayer(ctx, playerID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if p.RoomID != r.ID || p.LeftAt != nil {
+		return nil, nil
+	}
+	return &p, nil
+}
+
 // RoomSummary is the admin-facing representation of a room in the room
 // management list.
 type RoomSummary struct {
@@ -878,6 +981,10 @@ func (c *Coordinator) AddSituation(ctx context.Context, s content.Situation, isA
 	if !isAdmin {
 		return engine.ErrNotAllowed
 	}
+	if err := validateSituationText(s.Text); err != nil {
+		return err
+	}
+	s.Text = strings.TrimSpace(s.Text)
 	if s.ID == "" {
 		s.ID = uuid.NewString()
 	}
@@ -900,6 +1007,10 @@ func (c *Coordinator) UpdateSituation(ctx context.Context, s content.Situation, 
 	if !isAdmin {
 		return engine.ErrNotAllowed
 	}
+	if err := validateSituationText(s.Text); err != nil {
+		return err
+	}
+	s.Text = strings.TrimSpace(s.Text)
 	return c.repo.UpdateSituation(ctx, s)
 }
 
@@ -927,10 +1038,17 @@ func (c *Coordinator) BulkAddSituations(ctx context.Context, raw, delimiter stri
 		unique = append(unique, it)
 	}
 	result := BulkResult{Found: len(items), Duplicates: len(items) - len(unique)}
+	// Fail fast: validate every item before creating any row so a rejected
+	// import cannot leave a partial set behind (which a retry would duplicate).
+	for _, text := range unique {
+		if err := validateSituationText(text); err != nil {
+			return result, err
+		}
+	}
 	for _, text := range unique {
 		s := content.Situation{
 			ID:        uuid.NewString(),
-			Text:      text,
+			Text:      strings.TrimSpace(text),
 			Enabled:   true,
 			Source:    "bulk",
 			CreatedAt: time.Now().UTC(),
@@ -943,23 +1061,44 @@ func (c *Coordinator) BulkAddSituations(ctx context.Context, raw, delimiter stri
 	return result, nil
 }
 
-// parseBulk normalizes line endings, splits the text into situations on the
-// delimiter token anywhere in the text, trims, and removes empty entries.
+// validateSituationText validates a situation's trimmed length (spec §48:
+// 1..500 characters after trim).
+func validateSituationText(text string) error {
+	n := len([]rune(strings.TrimSpace(text)))
+	if n < 1 || n > 500 {
+		return fmt.Errorf("%w: situation must be 1..500 characters, got %d", engine.ErrInvalidCommand, n)
+	}
+	return nil
+}
+
+// parseBulk normalizes line endings and splits the text into situations. A
+// delimiter is a line that, after trimming, equals the delimiter token — not an
+// arbitrary occurrence of the token inside a sentence (spec §113–§115).
 func parseBulk(raw, delimiter string) []string {
 	normalized := strings.ReplaceAll(raw, "\r\n", "\n")
 	normalized = strings.ReplaceAll(normalized, "\r", "\n")
 	if delimiter == "" {
-		if text := strings.TrimSpace(normalized); text != "" {
-			return []string{text}
-		}
-		return nil
+		delimiter = "*"
 	}
 	var situations []string
-	for _, part := range strings.Split(normalized, delimiter) {
-		if text := strings.TrimSpace(part); text != "" {
+	var current strings.Builder
+	flush := func() {
+		if text := strings.TrimSpace(current.String()); text != "" {
 			situations = append(situations, text)
 		}
+		current.Reset()
 	}
+	for _, line := range strings.Split(normalized, "\n") {
+		if strings.TrimSpace(line) == delimiter {
+			flush()
+			continue
+		}
+		if current.Len() > 0 {
+			current.WriteString("\n")
+		}
+		current.WriteString(line)
+	}
+	flush()
 	return situations
 }
 

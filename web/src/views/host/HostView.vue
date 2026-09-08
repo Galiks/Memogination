@@ -8,6 +8,7 @@ import { sendCommand } from '@/composables/useCommands'
 import AppButton from '@/components/AppButton.vue'
 import AppCard from '@/components/AppCard.vue'
 import ConnectionBanner from '@/components/ConnectionBanner.vue'
+import CountdownTimer from '@/components/CountdownTimer.vue'
 import QrCodeCard from '@/components/QrCodeCard.vue'
 import PlayerList from '@/components/PlayerList.vue'
 import SettingsForm from '@/components/SettingsForm.vue'
@@ -54,6 +55,14 @@ const canStart = computed(() => {
 
 const activePhase = computed(() => {
   return ['PREPARATION', 'ROUND_SELECTION', 'ROUND_VOTING'].includes(phase.value)
+})
+
+// Server-provided phase deadline (RFC3339) for the countdown, in epoch ms.
+const phaseDeadlineMs = computed(() => {
+  const d = snapshot.value?.phaseDeadlineAt
+  if (!d) return null
+  const ms = Date.parse(d)
+  return Number.isNaN(ms) ? null : ms
 })
 
 function roomStateLabel(state: string): string {
@@ -223,6 +232,10 @@ onMounted(() => {
           {{ actionError }}
         </p>
 
+        <div v-if="phaseDeadlineMs !== null" class="mb-3 flex justify-end">
+          <CountdownTimer :deadline-ms="phaseDeadlineMs" />
+        </div>
+
         <!-- Room management -->
         <AppCard class="mb-4">
           <div class="mb-3 flex items-center justify-between">
@@ -282,6 +295,17 @@ onMounted(() => {
                 <p class="break-all text-center text-xs text-slate-400">{{ qrUrl }}</p>
               </div>
               <p v-else class="text-sm text-slate-400">Сетевые адреса недоступны</p>
+              <div class="mt-3 border-t border-slate-100 pt-3">
+                <p class="mb-1 text-xs font-medium text-slate-500">Общий экран</p>
+                <a
+                  v-if="roomCode"
+                  :href="`/screen/${roomCode}`"
+                  target="_blank"
+                  class="text-sm font-medium text-indigo-600 hover:underline"
+                >
+                  Открыть /screen для трансляции
+                </a>
+              </div>
             </AppCard>
           </div>
 
@@ -344,7 +368,7 @@ onMounted(() => {
           <!-- Content -->
           <AppCard class="mb-4">
             <h2 class="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-400">Контент</h2>
-            <ContentManager />
+            <ContentManager :default-delimiter="snapshot?.settings.situationSeparator || '*'" />
           </AppCard>
 
           <!-- Snapshot state -->

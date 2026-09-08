@@ -1,10 +1,11 @@
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, toValue, type MaybeRefOrGetter } from 'vue'
 
 /**
  * Counts down from a server-provided deadline timestamp (epoch ms).
- * Returns remaining milliseconds and a formatted mm:ss string.
+ * Returns remaining milliseconds and a formatted mm:ss string. The deadline
+ * may be reactive (ref/computed/getter) and is re-read on every tick.
  */
-export function useCountdown(deadlineMs: number | null | undefined) {
+export function useCountdown(deadlineMs: MaybeRefOrGetter<number | null | undefined>) {
   const now = ref(Date.now())
   let timer: number | null = null
 
@@ -22,8 +23,9 @@ export function useCountdown(deadlineMs: number | null | undefined) {
   })
 
   const remainingMs = computed(() => {
-    if (deadlineMs == null) return 0
-    return Math.max(0, deadlineMs - now.value)
+    const deadline = toValue(deadlineMs)
+    if (deadline == null) return 0
+    return Math.max(0, deadline - now.value)
   })
 
   const remainingSeconds = computed(() => Math.ceil(remainingMs.value / 1000))

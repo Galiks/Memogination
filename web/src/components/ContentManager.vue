@@ -6,6 +6,8 @@ import { useUiStore } from '@/stores/ui'
 import AppButton from '@/components/AppButton.vue'
 import MemeImage from '@/components/MemeImage.vue'
 
+const props = withDefaults(defineProps<{ defaultDelimiter?: string }>(), { defaultDelimiter: '*' })
+
 const ui = useUiStore()
 
 const memes = ref<MemeDTO[]>([])
@@ -16,17 +18,33 @@ const uploading = ref(false)
 
 const newSituationText = ref('')
 const bulkText = ref('')
-const bulkDelimiter = ref('*')
+const bulkDelimiter = ref(props.defaultDelimiter)
+const info = ref('')
 
 const enabledMemes = computed(() => memes.value.filter((m) => m.enabled))
 const disabledMemes = computed(() => memes.value.filter((m) => !m.enabled))
 
+// The delimiter is a separate line (spec §113–§115): a line that, after trim,
+// equals the delimiter splits the text. Inline occurrences are NOT separators.
 const bulkPreview = computed(() => {
-  const parts = bulkText.value
-    .split(bulkDelimiter.value || '*')
-    .map((s) => s.trim())
-    .filter(Boolean)
-  return parts
+  const delimiter = bulkDelimiter.value || '*'
+  const situations: string[] = []
+  let current: string[] = []
+  const flush = () => {
+    const text = current.join('\n').trim()
+    if (text) situations.push(text)
+    current = []
+  }
+  for (const rawLine of bulkText.value.split('\n')) {
+    const line = rawLine.replace(/\r$/, '')
+    if (line.trim() === delimiter) {
+      flush()
+      continue
+    }
+    current.push(line)
+  }
+  flush()
+  return situations
 })
 
 async function load(): Promise<void> {
@@ -96,9 +114,10 @@ async function addSituation(): Promise<void> {
 async function bulkAdd(): Promise<void> {
   if (!bulkText.value.trim()) return
   try {
-    await apiClient.bulkAddSituations(bulkText.value, bulkDelimiter.value || '*')
+    const res = await apiClient.bulkAddSituations(bulkText.value, bulkDelimiter.value || '*')
     bulkText.value = ''
     await load()
+    info.value = `Импортировано: найдено ${res.found}, дубликатов ${res.duplicates}, добавлено ${res.added}`
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Ошибка импорта'
   }
@@ -120,6 +139,7 @@ onMounted(load)
 <template>
   <div class="space-y-4">
     <div v-if="error" class="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{{ error }}</div>
+    <div v-if="info" class="rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{{ info }}</div>
 
     <div class="flex gap-2">
       <AppButton
@@ -196,7 +216,7 @@ onMounted(load)
         <textarea
           v-model="bulkText"
           rows="3"
-          placeholder="Ситуация 1 * Ситуация 2 * Ситуация 3"
+          placeholder="Ситуация 1&#10;*&#10;Ситуация 2&#10;*&#10;Ситуация 3"
           class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
         />
         <div class="flex items-center gap-2">

@@ -98,6 +98,8 @@ export interface GameSnapshot {
   phase: string
   actor: ActorDTO
   phaseData: Record<string, unknown>
+  /** RFC3339 deadline of the current phase, or empty when there is no timer. */
+  phaseDeadlineAt?: string
 }
 
 export interface GameEvent {

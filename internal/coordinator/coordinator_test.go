@@ -472,18 +472,18 @@ func TestBulkAddSituations(t *testing.T) {
 	require.ErrorIs(t, err, engine.ErrNotAllowed)
 }
 
-func TestBulkAddSituationsInlineDelimiter(t *testing.T) {
+func TestBulkAddSituationsInlineDelimiterIsNotASeparator(t *testing.T) {
 	c, _ := newCoordinator(t)
 	ctx := context.Background()
 
-	// The delimiter token splits situations anywhere in the text, not only on
-	// whole lines.
+	// Per spec the delimiter is a separate line: an inline "*" inside a
+	// sentence must NOT split the text into separate situations.
 	raw := "авыаыва * 3424 * ваыаыва"
 	res, err := c.BulkAddSituations(ctx, raw, "*", true)
 	require.NoError(t, err)
-	require.Equal(t, 3, res.Found)
+	require.Equal(t, 1, res.Found)
 	require.Equal(t, 0, res.Duplicates)
-	require.Equal(t, 3, res.Added)
+	require.Equal(t, 1, res.Added)
 
 	sits, err := c.ListSituations(ctx)
 	require.NoError(t, err)
@@ -493,7 +493,7 @@ func TestBulkAddSituationsInlineDelimiter(t *testing.T) {
 			texts = append(texts, s.Text)
 		}
 	}
-	require.ElementsMatch(t, []string{"авыаыва", "3424", "ваыаыва"}, texts)
+	require.ElementsMatch(t, []string{"авыаыва * 3424 * ваыаыва"}, texts)
 }
 
 func TestProjectionSecurityVoting(t *testing.T) {
@@ -536,6 +536,9 @@ func TestProjectionSecurityVoting(t *testing.T) {
 	}
 	// The forbidden option (the voter's own) must be present.
 	require.NotEmpty(t, snap.PhaseData["forbiddenOptionId"])
+	// The active game player id must be exposed so the active player can show
+	// the waiting screen instead of vote options.
+	require.NotEmpty(t, snap.PhaseData["activeGamePlayerId"])
 	// No private hands leaked.
 	_, hasHand := snap.PhaseData["hand"]
 	require.False(t, hasHand)
@@ -723,6 +726,73 @@ func TestStartNewGameResetsRoomToLobby(t *testing.T) {
 	require.NotNil(t, snap2.Game)
 }
 
+func TestLeaveRevokesSessionAndBlocksReconnect(t *testing.T) {
+	c, _ := newCoordinator(t)
+	ctx := context.Background()
+	r, err := c.CreateRoom(ctx, "Host")
+	require.NoError(t, err)
+	players := joinPlayers(t, c, r.ID, r.Code, "Alice", "Bob")
+	host := players[0].playerID
+
+	f := newFlow(t, c, r.ID, r.Code)
+	f.cmd("s", engine.CommandStartGame, host, false, nil)
+
+	// Bob leaves during the game.
+	_, _, err = c.HandleCommand(ctx, r.Code, engine.Command{
+		Type:      engine.CommandLeaveRoom,
+		CommandID: "leave-1",
+		Now:       time.Now().UTC(),
+	}, f.rev, players[1].playerID, false)
+	require.NoError(t, err)
+
+	// His session is revoked: reconnect must fail (spec §31).
+	_, err = c.Reconnect(ctx, r.Code, players[1].token)
+	require.ErrorIs(t, err, session.ErrInvalidToken)
+
+	// Bob is gone from the room player list.
+	agg, err := c.LoadAggregate(ctx, r.ID)
+	require.NoError(t, err)
+	require.Len(t, agg.ActivePlayers(), 1)
+}
+
+func TestKickRevokesSessionAndBlocksReconnect(t *testing.T) {
+	c, _ := newCoordinator(t)
+	ctx := context.Background()
+	r, err := c.CreateRoom(ctx, "Host")
+	require.NoError(t, err)
+	players := joinPlayers(t, c, r.ID, r.Code, "Alice", "Bob")
+
+	_, _, err = c.HandleCommand(ctx, r.Code, engine.Command{
+		Type:      engine.CommandKickPlayer,
+		CommandID: "kick-1",
+		Payload:   map[string]any{"playerId": players[1].playerID},
+		Now:       time.Now().UTC(),
+	}, 0, "", true)
+	require.NoError(t, err)
+
+	// The kicked player cannot reconnect (spec §32: kick == forced leave).
+	_, err = c.Reconnect(ctx, r.Code, players[1].token)
+	require.ErrorIs(t, err, session.ErrInvalidToken)
+}
+
+func TestJoinRestoresExistingSession(t *testing.T) {
+	c, _ := newCoordinator(t)
+	ctx := context.Background()
+	r, err := c.CreateRoom(ctx, "Host")
+	require.NoError(t, err)
+	_, snap1, err := c.JoinRoom(ctx, r.Code, "Alice")
+	require.NoError(t, err)
+	require.Len(t, snap1.Players, 1)
+
+	// "Join" again is not a coordinator concern (transport restores the session
+	// before calling JoinRoom), but re-joining with the same name must fail
+	// rather than duplicate the player.
+	_, _, err = c.JoinRoom(ctx, r.Code, "Alice")
+	require.ErrorIs(t, err, engine.ErrInvalidName)
+	agg, err := c.LoadAggregate(ctx, r.ID)
+	require.NoError(t, err)
+	require.Len(t, agg.ActivePlayers(), 1)
+}
 func TestListRoomsAndDeleteRoom(t *testing.T) {
 	c, repo := newCoordinator(t)
 	ctx := context.Background()

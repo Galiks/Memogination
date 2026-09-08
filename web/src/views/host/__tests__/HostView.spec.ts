@@ -35,6 +35,8 @@ vi.mock('@/services/gameSocket', () => ({
     onSnapshot: vi.fn(() => () => {}),
     onStateUpdated: vi.fn(() => () => {}),
     onStatus: vi.fn(() => () => {}),
+    onSessionRevoked: vi.fn(() => () => {}),
+    onProbe: vi.fn(() => () => {}),
   },
 }))
 

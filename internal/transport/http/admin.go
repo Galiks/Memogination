@@ -10,10 +10,12 @@ import (
 //
 // Design note: admin tokens are intentionally kept in an in-memory map guarded
 // by a mutex rather than persisted. A Local Admin is a trusted operator on the
-// loopback interface; tokens are short-lived for the process lifetime and are
-// never written to disk, which keeps the admin boundary simple and avoids
-// persisting privileged credentials. This is acceptable for the local-party
-// threat model where the admin is the person running the server.
+// machine running the server (reached via loopback or one of the machine's own
+// interface addresses, see isLocalClient); tokens are short-lived for the
+// process lifetime and are never written to disk, which keeps the admin
+// boundary simple and avoids persisting privileged credentials. This is
+// acceptable for the local-party threat model where the admin is the person
+// running the server.
 type AdminManager struct {
 	mu     sync.Mutex
 	tokens map[string]bool

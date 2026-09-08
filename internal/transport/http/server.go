@@ -19,6 +19,7 @@ import (
 	"github.com/memomarium/memomarium/internal/coordinator"
 	"github.com/memomarium/memomarium/internal/domain/content"
 	"github.com/memomarium/memomarium/internal/domain/room"
+	"github.com/memomarium/memomarium/internal/domain/scoring"
 	"github.com/memomarium/memomarium/internal/engine"
 	"github.com/memomarium/memomarium/internal/media"
 	"github.com/memomarium/memomarium/internal/projection"
@@ -155,13 +156,40 @@ func (s *Server) writeError(w http.ResponseWriter, err error) {
 	writeJSON(w, statusForCode(code), body)
 }
 
-func isLoopback(r *http.Request) bool {
+// isLocalClient reports whether the request originates from the machine that
+// runs the server: a loopback address or any of this machine's own interface
+// addresses. The admin panel is advertised to the operator via the machine's
+// LAN address (the host view shows it for the player QR), so the operator may
+// legitimately reach /host through that address instead of localhost. Other
+// devices on the LAN are still denied because their source address is not one
+// of ours. Only the raw TCP peer (RemoteAddr) is trusted — never forwarded
+// headers.
+func isLocalClient(r *http.Request) bool {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return false
 	}
 	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
+	if ip == nil {
+		return false
+	}
+	if ip.IsLoopback() {
+		return true
+	}
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return false
+	}
+	for _, a := range addrs {
+		ipnet, ok := a.(*net.IPNet)
+		if !ok {
+			continue
+		}
+		if ip.Equal(ipnet.IP) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) isAdmin(r *http.Request) bool {
@@ -203,7 +231,7 @@ func (s *Server) handleNetworkAddresses(w http.ResponseWriter, r *http.Request) 
 // --- admin ---
 
 func (s *Server) handleAdminBootstrap(w http.ResponseWriter, r *http.Request) {
-	if !isLoopback(r) {
+	if !isLocalClient(r) {
 		s.writeError(w, engine.ErrNotAllowed)
 		return
 	}
@@ -226,9 +254,13 @@ func (s *Server) handleAdminBootstrap(w http.ResponseWriter, r *http.Request) {
 
 // handleCreateRoom creates a new room and returns it with its join code. This
 // endpoint is a minimal addition beyond the original spec: without a way to
-// create a room, the join endpoint would be unusable. The coordinator's
-// CreateRoom method is exposed here.
+// create a room, the join endpoint would be unusable. Room management is a
+// Local Admin capability (spec §25), so creation requires the admin cookie.
 func (s *Server) handleCreateRoom(w http.ResponseWriter, r *http.Request) {
+	if !s.isAdmin(r) {
+		s.writeError(w, engine.ErrNotAllowed)
+		return
+	}
 	var body struct {
 		Name string `json:"name"`
 	}
@@ -274,6 +306,20 @@ func (s *Server) handleDeleteRoom(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleJoin(w http.ResponseWriter, r *http.Request) {
 	code := chi.URLParam(r, "code")
+	// Duplicate-join protection (spec §29): if this browser already has a valid
+	// session for the room, restore the existing player instead of creating a
+	// new one.
+	if token, err := s.sessionCookie(r); err == nil {
+		if sess, err := s.Sessions.Authenticate(r.Context(), token); err == nil {
+			if p, perr := s.Coordinator.PlayerInRoom(r.Context(), code, sess.PlayerID); perr == nil && p != nil {
+				snap, err := s.Coordinator.Reconnect(r.Context(), code, token)
+				if err == nil {
+					writeJSON(w, http.StatusOK, snap)
+					return
+				}
+			}
+		}
+	}
 	var body struct {
 		Name string `json:"name"`
 	}
@@ -321,6 +367,14 @@ func (s *Server) handleCommands(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		s.writeError(w, engine.ErrInvalidCommand)
+		return
+	}
+
+	// TIMEOUT_PHASE is a system command issued only by the coordinator's
+	// deadline scheduler (or Recover at startup). Forcing it from the API would
+	// let any client advance the phase regardless of the configured timers.
+	if body.Type == engine.CommandTimeoutPhase {
+		s.writeError(w, engine.ErrNotAllowed)
 		return
 	}
 
@@ -406,26 +460,73 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, settings)
 }
 
+// settingsPatch is a partial room-settings update. Pointer fields distinguish
+// "not provided" (keep current value) from an explicit zero, which is required
+// to disable a phase timer (0 = no timer) and to store the score config and
+// situation separator.
+type settingsPatch struct {
+	MinPlayers                   *int                 `json:"minPlayers"`
+	MaxPlayers                   *int                 `json:"maxPlayers"`
+	HandSize                     *int                 `json:"handSize"`
+	PreparationTimeoutSeconds    *int                 `json:"preparationTimeoutSeconds"`
+	RoundSelectionTimeoutSeconds *int                 `json:"roundSelectionTimeoutSeconds"`
+	VotingTimeoutSeconds         *int                 `json:"votingTimeoutSeconds"`
+	InfiniteGame                 *bool                `json:"infiniteGame"`
+	SituationSeparator           *string              `json:"situationSeparator"`
+	ScoreConfig                  *scoring.ScoreConfig `json:"scoreConfig"`
+}
+
+// applySettingsPatch merges a partial update over the current settings.
+func applySettingsPatch(current room.RoomSettings, patch settingsPatch) room.RoomSettings {
+	if patch.MinPlayers != nil {
+		current.MinPlayers = *patch.MinPlayers
+	}
+	if patch.MaxPlayers != nil {
+		current.MaxPlayers = *patch.MaxPlayers
+	}
+	if patch.HandSize != nil {
+		current.HandSize = *patch.HandSize
+	}
+	if patch.PreparationTimeoutSeconds != nil {
+		current.PreparationTimeoutSeconds = *patch.PreparationTimeoutSeconds
+	}
+	if patch.RoundSelectionTimeoutSeconds != nil {
+		current.RoundSelectionTimeoutSeconds = *patch.RoundSelectionTimeoutSeconds
+	}
+	if patch.VotingTimeoutSeconds != nil {
+		current.VotingTimeoutSeconds = *patch.VotingTimeoutSeconds
+	}
+	if patch.InfiniteGame != nil {
+		current.InfiniteGame = *patch.InfiniteGame
+	}
+	if patch.SituationSeparator != nil {
+		current.SituationSeparator = *patch.SituationSeparator
+	}
+	if patch.ScoreConfig != nil {
+		current.ScoreConfig = *patch.ScoreConfig
+	}
+	return current
+}
+
 func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	code := chi.URLParam(r, "code")
 	if !s.isAdmin(r) {
 		s.writeError(w, engine.ErrNotAllowed)
 		return
 	}
-	var settings struct {
-		MinPlayers                   int  `json:"minPlayers"`
-		MaxPlayers                   int  `json:"maxPlayers"`
-		HandSize                     int  `json:"handSize"`
-		PreparationTimeoutSeconds    int  `json:"preparationTimeoutSeconds"`
-		RoundSelectionTimeoutSeconds int  `json:"roundSelectionTimeoutSeconds"`
-		VotingTimeoutSeconds         int  `json:"votingTimeoutSeconds"`
-		InfiniteGame                 bool `json:"infiniteGame"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&settings); err != nil {
+	var patch settingsPatch
+	if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
 		s.writeError(w, engine.ErrInvalidSettings)
 		return
 	}
-	rs := roomSettingsFromDTO(settings)
+	// Merge over the current settings so partial updates (e.g. a single field)
+	// never reset fields the client did not send.
+	current, err := s.Coordinator.GetSettings(r.Context(), code)
+	if err != nil {
+		s.writeError(w, err)
+		return
+	}
+	rs := applySettingsPatch(current, patch)
 	if err := s.Coordinator.UpdateSettings(r.Context(), code, rs, true); err != nil {
 		s.writeError(w, err)
 		return
@@ -803,6 +904,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	client := websocket.NewClient(conn, room.ID, s.Hub)
+	client.PlayerID = playerID
 	if playerID != "" {
 		client.OnDisconnect = func() {
 			_ = s.Coordinator.MarkDisconnected(context.Background(), playerID)
@@ -814,38 +916,4 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	client.Send(initMsg)
 
 	client.Run()
-}
-
-// roomSettingsFromDTO converts the settings DTO into a room.RoomSettings,
-// preserving defaults for fields not sent by the client.
-func roomSettingsFromDTO(d struct {
-	MinPlayers                   int  `json:"minPlayers"`
-	MaxPlayers                   int  `json:"maxPlayers"`
-	HandSize                     int  `json:"handSize"`
-	PreparationTimeoutSeconds    int  `json:"preparationTimeoutSeconds"`
-	RoundSelectionTimeoutSeconds int  `json:"roundSelectionTimeoutSeconds"`
-	VotingTimeoutSeconds         int  `json:"votingTimeoutSeconds"`
-	InfiniteGame                 bool `json:"infiniteGame"`
-}) room.RoomSettings {
-	rs := room.DefaultRoomSettings()
-	if d.MinPlayers != 0 {
-		rs.MinPlayers = d.MinPlayers
-	}
-	if d.MaxPlayers != 0 {
-		rs.MaxPlayers = d.MaxPlayers
-	}
-	if d.HandSize != 0 {
-		rs.HandSize = d.HandSize
-	}
-	if d.PreparationTimeoutSeconds != 0 {
-		rs.PreparationTimeoutSeconds = d.PreparationTimeoutSeconds
-	}
-	if d.RoundSelectionTimeoutSeconds != 0 {
-		rs.RoundSelectionTimeoutSeconds = d.RoundSelectionTimeoutSeconds
-	}
-	if d.VotingTimeoutSeconds != 0 {
-		rs.VotingTimeoutSeconds = d.VotingTimeoutSeconds
-	}
-	rs.InfiniteGame = d.InfiniteGame
-	return rs
 }

@@ -1,6 +1,10 @@
 package engine
 
-import "context"
+import (
+	"context"
+	"crypto/rand"
+	"encoding/binary"
+)
 
 // Engine implements the game state machine. It is pure-ish: it operates on an
 // in-memory aggregate, mutating it in place and returning events. It does not
@@ -9,9 +13,19 @@ type Engine struct {
 	dealer *MemeDealer
 }
 
-// New returns an Engine with a deterministically seeded MemeDealer.
+// randomSeed returns a cryptographically random int64 used to seed the dealer
+// in production. Tests use NewWithDealer with a fixed seed for determinism.
+func randomSeed() int64 {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err == nil {
+		return int64(binary.LittleEndian.Uint64(b[:]))
+	}
+	return 1
+}
+
+// New returns an Engine with a randomly seeded MemeDealer.
 func New() *Engine {
-	return &Engine{dealer: NewMemeDealer(1)}
+	return &Engine{dealer: NewMemeDealer(randomSeed())}
 }
 
 // NewWithDealer returns an Engine using the given MemeDealer.

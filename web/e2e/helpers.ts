@@ -122,7 +122,7 @@ export async function waitForHostPhase(host: Page, phase: string): Promise<void>
  * Clicks the first element matching `selector` via the DOM, retrying on re-renders.
  */
 async function domClick(page: Page, selector: string): Promise<void> {
-  for (let attempt = 0; attempt < 10; attempt++) {
+  for (let attempt = 0; attempt < 20; attempt++) {
     const clicked = await page.evaluate((sel) => {
       const el = document.querySelector(sel) as HTMLElement | null
       if (el) {
@@ -132,7 +132,7 @@ async function domClick(page: Page, selector: string): Promise<void> {
       return false
     }, selector)
     if (clicked) return
-    await page.waitForTimeout(300)
+    await page.waitForTimeout(500)
   }
   throw new Error(`Failed to DOM-click ${selector}`)
 }
@@ -162,18 +162,59 @@ export async function completeRoundSelection(page: Page): Promise<void> {
   await domClick(page, '[data-testid="ready-button"]')
 }
 
+/** True when the round is over from this player's perspective: the round
+ *  already resolved, the player is the active player waiting for others, or
+ *  the player already voted. All of these are success in completeVoting. */
+async function votingFinished(page: Page): Promise<boolean> {
+  if (await page.getByRole('heading', { name: /Результаты раунда/ }).isVisible().catch(() => false)) return true
+  if (await page.getByText('Идёт голосование').isVisible().catch(() => false)) return true
+  if (await page.getByText('Проголосовано').isVisible().catch(() => false)) return true
+  return false
+}
+
 /** Completes ROUND_VOTING for a player, avoiding their own (forbidden) option. */
 export async function completeVoting(page: Page): Promise<void> {
-  await waitForPhase(page, 'ROUND_VOTING')
-  // Wait for either the active-player notice or the vote options to render.
+  // First settle: wait until the view reaches a voting-relevant state. The
+  // round may already be over for this player (active player waiting, already
+  // voted, or the round resolved — e.g. the last non-active voter elsewhere
+  // closed it) — all of those are success. Note: waitForPhase's /Голосование/
+  // regex also matches the reveal panel's "Голосование" h3 inside
+  // ROUND_RESULTS, so the results heading is checked explicitly here.
   await expect(
-    page.getByText('Идёт голосование').or(page.locator('[data-testid="vote-option"]:not([disabled])').first()),
+    page
+      .getByRole('heading', { name: /Результаты раунда/ })
+      .or(page.getByText('Идёт голосование'))
+      .or(page.getByText('Проголосовано'))
+      .or(page.locator('[data-testid="vote-option"]:not([disabled])').first()),
   ).toBeVisible()
-  if (await page.getByText('Идёт голосование').isVisible().catch(() => false)) return
-  // Select a non-forbidden vote option via DOM (reliable despite re-renders).
-  await domClick(page, '[data-testid="vote-option"]:not([disabled])')
-  await expect(page.locator('[data-testid="ready-button"]')).toBeEnabled()
-  await domClick(page, '[data-testid="ready-button"]')
+  if (await votingFinished(page)) return
+
+  // Otherwise vote. The client view can be replaced by a resolved round while
+  // we act (WebSocket snapshot catch-up / the last non-active voter closing
+  // the round), so every step treats "round over" as success and retries.
+  for (let attempt = 0; attempt < 40; attempt++) {
+    if (await votingFinished(page)) return
+    const clicked = await page.evaluate(() => {
+      const el = document.querySelector('[data-testid="vote-option"]:not([disabled])') as HTMLElement | null
+      if (el) {
+        el.click()
+        return true
+      }
+      return false
+    })
+    if (clicked) {
+      // Submit the vote; if the round resolved meanwhile that is success too.
+      await page.locator('[data-testid="ready-button"]').click({ timeout: 10_000 }).catch(async () => {
+        if (!(await votingFinished(page))) throw new Error('ready-button missing while the round is still open')
+      })
+      await expect(
+        page.getByText('Проголосовано').or(page.getByRole('heading', { name: /Результаты раунда/ })),
+      ).toBeVisible()
+      return
+    }
+    await page.waitForTimeout(500)
+  }
+  throw new Error('completeVoting: neither a votable UI nor a resolved round appeared')
 }
 
 // --- API helpers (admin-authenticated via the host page) ---

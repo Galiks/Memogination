@@ -18,6 +18,7 @@ import { useFullscreen } from '@/composables/useFullscreen'
 import AppButton from '@/components/AppButton.vue'
 import AppCard from '@/components/AppCard.vue'
 import ConnectionBanner from '@/components/ConnectionBanner.vue'
+import CountdownTimer from '@/components/CountdownTimer.vue'
 import PlayerList from '@/components/PlayerList.vue'
 import MemeImage from '@/components/MemeImage.vue'
 import RevealPanel from '@/components/RevealPanel.vue'
@@ -50,7 +51,9 @@ const reveal = computed<RevealData | undefined>(() => resultsData.value.reveal)
 const activePlayerName = computed(() => {
   const id = selectionData.value.activeGamePlayerId
   if (!id) return ''
-  return game.value?.players.find((p) => p.playerId === id)?.displayName ?? ''
+  // activeGamePlayerId is a game-player id (snapshot.game.players[].id), not a
+  // room player id.
+  return game.value?.players.find((p) => p.id === id)?.displayName ?? ''
 })
 
 const winners = computed(() => {
@@ -58,6 +61,14 @@ const winners = computed(() => {
   if (entries.length === 0) return []
   const max = Math.max(...entries.map((e) => e.score))
   return entries.filter((e) => e.score === max)
+})
+
+// Server-provided phase deadline (RFC3339) for the countdown, in epoch ms.
+const phaseDeadlineMs = computed(() => {
+  const d = snapshot.value?.phaseDeadlineAt
+  if (!d) return null
+  const ms = Date.parse(d)
+  return Number.isNaN(ms) ? null : ms
 })
 
 onMounted(() => {
@@ -74,6 +85,7 @@ onMounted(() => {
       <div class="mb-6 flex items-center justify-between">
         <h1 class="text-2xl font-bold">Memomarium</h1>
         <div class="flex items-center gap-3">
+          <CountdownTimer v-if="phaseDeadlineMs !== null" :deadline-ms="phaseDeadlineMs" />
           <ConnectionBanner />
           <AppButton variant="secondary" size="sm" @click="toggleFullscreen">
             {{ isFullscreen ? 'Выйти из полноэкранного' : 'Полный экран' }}

@@ -11,6 +11,7 @@ import (
 	"github.com/memomarium/memomarium/internal/domain/player"
 	"github.com/memomarium/memomarium/internal/domain/room"
 	"github.com/memomarium/memomarium/internal/domain/round"
+	"github.com/memomarium/memomarium/internal/domain/scoring"
 	"github.com/memomarium/memomarium/internal/engine"
 )
 
@@ -25,6 +26,10 @@ type GameSnapshot struct {
 	Phase      string          `json:"phase"`
 	Actor      ActorDTO        `json:"actor"`
 	PhaseData  map[string]any  `json:"phaseData"`
+	// PhaseDeadlineAt is the RFC3339 deadline of the current phase, or "" when
+	// the phase has no timer (0 = no timer). Clients display a countdown based
+	// on this value (spec §74).
+	PhaseDeadlineAt string `json:"phaseDeadlineAt"`
 }
 
 // RoomPlayerDTO is the public room-player representation. It is always present
@@ -122,6 +127,7 @@ type RevealVoteOptionDTO struct {
 	Number            int    `json:"number"`
 	MemeID            string `json:"memeId"`
 	OwnerGamePlayerID string `json:"ownerGamePlayerId"`
+	OwnerDisplayName  string `json:"ownerDisplayName"`
 	IsOriginal        bool   `json:"isOriginal"`
 	Votes             int    `json:"votes"`
 }
@@ -188,6 +194,9 @@ func buildSnapshot(agg *engine.Aggregate, v viewer) *GameSnapshot {
 		Actor:      actorDTO(agg, v),
 		PhaseData:  map[string]any{},
 	}
+	if agg.PhaseDeadlineAt != nil {
+		snap.PhaseDeadlineAt = agg.PhaseDeadlineAt.UTC().Format(time.RFC3339)
+	}
 	if agg.Game != nil {
 		snap.Game = gameDTO(agg)
 	}
@@ -239,7 +248,7 @@ func gameDTO(agg *engine.Aggregate) *GameDTO {
 	g := &GameDTO{
 		ID:          agg.Game.ID,
 		State:       string(agg.Game.State),
-		Settings:    settingsDTO(agg.Settings),
+		Settings:    gameSettingsDTO(agg.Game.SettingsSnapshot),
 		Players:     []GamePlayerDTO{},
 		Leaderboard: []LeaderboardEntry{},
 	}
@@ -275,16 +284,34 @@ func settingsDTO(s room.RoomSettings) GameSettingsDTO {
 		VotingTimeoutSeconds:         s.VotingTimeoutSeconds,
 		InfiniteGame:                 s.InfiniteGame,
 		SituationSeparator:           s.SituationSeparator,
-		ScoreConfig: ScoreConfigDTO{
-			AllGuessedActivePlayer:  s.ScoreConfig.AllGuessedActivePlayer,
-			AllGuessedGuesser:       s.ScoreConfig.AllGuessedGuesser,
-			NoneGuessedActivePlayer: s.ScoreConfig.NoneGuessedActivePlayer,
-			NoneGuessedOtherPlayer:  s.ScoreConfig.NoneGuessedOtherPlayer,
-			PartialActiveBase:       s.ScoreConfig.PartialActiveBase,
-			PartialActivePerGuesser: s.ScoreConfig.PartialActivePerGuesser,
-			PartialGuesser:          s.ScoreConfig.PartialGuesser,
-			VoteForSubmittedMeme:    s.ScoreConfig.VoteForSubmittedMeme,
-		},
+		ScoreConfig:                  scoreConfigDTO(s.ScoreConfig),
+	}
+}
+
+func gameSettingsDTO(s game.GameSettingsSnapshot) GameSettingsDTO {
+	return GameSettingsDTO{
+		MinPlayers:                   s.MinPlayers,
+		MaxPlayers:                   s.MaxPlayers,
+		HandSize:                     s.HandSize,
+		PreparationTimeoutSeconds:    s.PreparationTimeoutSeconds,
+		RoundSelectionTimeoutSeconds: s.RoundSelectionTimeoutSeconds,
+		VotingTimeoutSeconds:         s.VotingTimeoutSeconds,
+		InfiniteGame:                 s.InfiniteGame,
+		SituationSeparator:           s.SituationSeparator,
+		ScoreConfig:                  scoreConfigDTO(s.ScoreConfig),
+	}
+}
+
+func scoreConfigDTO(s scoring.ScoreConfig) ScoreConfigDTO {
+	return ScoreConfigDTO{
+		AllGuessedActivePlayer:  s.AllGuessedActivePlayer,
+		AllGuessedGuesser:       s.AllGuessedGuesser,
+		NoneGuessedActivePlayer: s.NoneGuessedActivePlayer,
+		NoneGuessedOtherPlayer:  s.NoneGuessedOtherPlayer,
+		PartialActiveBase:       s.PartialActiveBase,
+		PartialActivePerGuesser: s.PartialActivePerGuesser,
+		PartialGuesser:          s.PartialGuesser,
+		VoteForSubmittedMeme:    s.VoteForSubmittedMeme,
 	}
 }
 
@@ -340,12 +367,21 @@ func phaseData(agg *engine.Aggregate, v viewer) map[string]any {
 	case game.PhaseRoundVoting:
 		if r := agg.CurrentRound(); r != nil {
 			data["situationText"] = r.SituationText
+			data["activeGamePlayerId"] = r.ActiveGamePlayerID
 			data["voteOptions"] = voteOptionsDTO(agg, r)
 			if v.kind == viewerPlayer {
 				if gp := agg.GamePlayerByPlayerID(v.playerID); gp != nil {
 					for _, o := range agg.VoteOptions {
 						if o.RoundID == r.ID && o.OwnerGamePlayerID == gp.ID {
 							data["forbiddenOptionId"] = o.ID
+							break
+						}
+					}
+					// Expose the player's own vote so a reconnecting client can
+					// restore the "voted" state instead of showing options again.
+					for _, vt := range agg.Votes {
+						if vt.RoundID == r.ID && vt.GamePlayerID == gp.ID {
+							data["voted"] = true
 							break
 						}
 					}
@@ -417,11 +453,16 @@ func revealDTO(agg *engine.Aggregate) map[string]any {
 		if o.RoundID != r.ID {
 			continue
 		}
+		ownerName := ""
+		if gp := agg.GamePlayerByID(o.OwnerGamePlayerID); gp != nil {
+			ownerName = gp.DisplayName
+		}
 		options = append(options, RevealVoteOptionDTO{
 			ID:                o.ID,
 			Number:            o.Number,
 			MemeID:            o.MemeID,
 			OwnerGamePlayerID: o.OwnerGamePlayerID,
+			OwnerDisplayName:  ownerName,
 			IsOriginal:        o.IsOriginal,
 			Votes:             votesByOption[o.ID],
 		})

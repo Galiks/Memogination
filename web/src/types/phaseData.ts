@@ -22,8 +22,11 @@ export interface VoteOption {
 
 export interface RoundVotingPhaseData {
   situationText?: string
+  activeGamePlayerId?: string
   voteOptions?: VoteOption[]
   forbiddenOptionId?: string
+  /** True when this player has already voted in the current round. */
+  voted?: boolean
 }
 
 export interface RevealVoteOption {
@@ -31,6 +34,7 @@ export interface RevealVoteOption {
   number: number
   memeId: string
   ownerGamePlayerId: string
+  ownerDisplayName: string
   isOriginal: boolean
   votes: number
 }

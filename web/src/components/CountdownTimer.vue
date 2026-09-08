@@ -2,7 +2,7 @@
 import { useCountdown } from '@/composables/useCountdown'
 
 const props = defineProps<{ deadlineMs: number | null | undefined }>()
-const { formatted, isExpired } = useCountdown(props.deadlineMs)
+const { formatted, isExpired } = useCountdown(() => props.deadlineMs)
 </script>
 
 <template>

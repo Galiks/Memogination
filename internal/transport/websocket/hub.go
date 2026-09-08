@@ -58,3 +58,22 @@ func (h *Hub) Broadcast(roomID string, msg any) {
 		}
 	}
 }
+
+// ClosePlayer terminates the live connection of a specific player in a room
+// with the session-revoked close code. It is used when a player is kicked or
+// leaves so their client stops reconnecting and returns to the join screen.
+// No-op when the player has no open connection.
+func (h *Hub) ClosePlayer(roomID, playerID string) {
+	h.mu.RLock()
+	var target *Client
+	for c := range h.rooms[roomID] {
+		if c.PlayerID == playerID {
+			target = c
+			break
+		}
+	}
+	h.mu.RUnlock()
+	if target != nil {
+		target.closeForSessionRevoked()
+	}
+}

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import type { MemeDTO } from '@/types/api'
 import type {
@@ -21,8 +21,9 @@ import { sendCommand } from '@/composables/useCommands'
 import AppButton from '@/components/AppButton.vue'
 import AppCard from '@/components/AppCard.vue'
 import ConnectionBanner from '@/components/ConnectionBanner.vue'
+import CountdownTimer from '@/components/CountdownTimer.vue'
 import PlayerList from '@/components/PlayerList.vue'
-import MemeGrid from '@/components/MemeGrid.vue'
+import MemeSlider from '@/components/MemeSlider.vue'
 import SituationInput from '@/components/SituationInput.vue'
 import VoteOptionCard from '@/components/VoteOptionCard.vue'
 import RevealPanel from '@/components/RevealPanel.vue'
@@ -80,6 +81,9 @@ const selectionHandMemes = computed(() =>
 )
 const voteOptions = computed<VoteOption[]>(() => votingData.value.voteOptions ?? [])
 const reveal = computed<RevealData | undefined>(() => resultsData.value.reveal)
+// The player has voted if this session submitted a vote or the server says so
+// (covers reconnects and snapshot catch-up).
+const hasVoted = computed(() => voted.value || votingData.value.voted === true)
 
 const canStart = computed(() => {
   const s = snapshot.value
@@ -99,6 +103,14 @@ const winners = computed(() => {
 })
 
 const activePhases = ['PREPARATION', 'ROUND_SELECTION', 'ROUND_VOTING']
+
+// Server-provided phase deadline (RFC3339) for the countdown, in epoch ms.
+const phaseDeadlineMs = computed(() => {
+  const d = snapshot.value?.phaseDeadlineAt
+  if (!d) return null
+  const ms = Date.parse(d)
+  return Number.isNaN(ms) ? null : ms
+})
 
 watch(phase, async (p) => {
   if (activePhases.includes(p)) await wakeRequest()
@@ -122,7 +134,12 @@ async function tryReconnect(): Promise<void> {
     connectWS()
     void loadMemes()
   } catch (err) {
-    if (err instanceof ApiError && (err.code === 'INVALID_SESSION' || err.code === 'PLAYER_NOT_FOUND')) {
+    if (
+      err instanceof ApiError &&
+      (err.code === 'INVALID_SESSION' ||
+        err.code === 'PLAYER_NOT_FOUND' ||
+        err.code === 'PLAYER_ALREADY_LEFT')
+    ) {
       joined.value = false
     } else {
       joinError.value = err instanceof Error ? err.message : 'Не удалось подключиться'
@@ -160,35 +177,39 @@ async function randomSituation(): Promise<void> {
   }
 }
 
-async function runCommand(type: string, payload?: Record<string, unknown>): Promise<void> {
+async function runCommand(type: string, payload?: Record<string, unknown>): Promise<boolean> {
   actionError.value = ''
   try {
     await sendCommand(type, payload)
+    return true
   } catch (err) {
     actionError.value = err instanceof Error ? err.message : 'Ошибка команды'
+    return false
   }
 }
 
 async function submitPreparation(): Promise<void> {
   if (!prepReady.value) return
-  await runCommand('SUBMIT_PREPARATION', {
+  const ok = await runCommand('SUBMIT_PREPARATION', {
     situationText: situationText.value.trim(),
     memeId: selectedMemeId.value!,
   })
-  submitted.value = true
+  if (ok) submitted.value = true
 }
 
 async function submitRoundMeme(): Promise<void> {
   if (!selectionReady.value) return
-  await runCommand('SUBMIT_ROUND_MEME', { memeId: selectedMemeId.value! })
-  submitted.value = true
+  const ok = await runCommand('SUBMIT_ROUND_MEME', { memeId: selectedMemeId.value! })
+  if (ok) submitted.value = true
 }
 
 async function submitVote(): Promise<void> {
   if (!votingReady.value) return
-  await runCommand('SUBMIT_VOTE', { voteOptionId: votedOptionId.value! })
-  voted.value = true
-  votedOptionId.value = null
+  const ok = await runCommand('SUBMIT_VOTE', { voteOptionId: votedOptionId.value! })
+  if (ok) {
+    voted.value = true
+    votedOptionId.value = null
+  }
 }
 
 async function startGame(): Promise<void> {
@@ -223,6 +244,19 @@ async function leaveRoom(): Promise<void> {
 
 onMounted(() => {
   void tryReconnect()
+  // If the session is revoked while connected (kicked / left elsewhere), drop
+  // back to the join form instead of staying frozen on a stale snapshot.
+  const unsubscribe = connection.onSessionLost(() => {
+    session.reset()
+    joined.value = false
+    name.value = ''
+    situationText.value = ''
+    selectedMemeId.value = null
+    submitted.value = false
+    voted.value = false
+    votedOptionId.value = null
+  })
+  onBeforeUnmount(unsubscribe)
 })
 </script>
 
@@ -262,6 +296,10 @@ onMounted(() => {
       <p v-if="actionError" class="mb-3 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
         {{ actionError }}
       </p>
+
+      <div v-if="phaseDeadlineMs !== null" class="mb-3 flex justify-end">
+        <CountdownTimer :deadline-ms="phaseDeadlineMs" />
+      </div>
 
       <!-- LOBBY -->
       <AppCard v-if="roomState === 'LOBBY'">
@@ -304,7 +342,7 @@ onMounted(() => {
           <p class="mb-3 text-sm text-slate-600">Придумайте ситуацию под мем:</p>
           <SituationInput v-model="situationText" @random="randomSituation" />
           <p class="mb-2 mt-4 text-sm font-medium text-slate-700">Выберите мем:</p>
-          <MemeGrid :memes="prepHandMemes" :selected-id="selectedMemeId" @select="selectedMemeId = $event" />
+          <MemeSlider :memes="prepHandMemes" :selected-id="selectedMemeId" @select="selectedMemeId = $event" />
         </template>
       </AppCard>
 
@@ -329,7 +367,7 @@ onMounted(() => {
         </template>
         <template v-else>
           <p class="mb-2 text-sm font-medium text-slate-700">Выберите мем:</p>
-          <MemeGrid :memes="selectionHandMemes" :selected-id="selectedMemeId" @select="selectedMemeId = $event" />
+          <MemeSlider :memes="selectionHandMemes" :selected-id="selectedMemeId" @select="selectedMemeId = $event" />
         </template>
       </AppCard>
 
@@ -346,7 +384,7 @@ onMounted(() => {
             <p class="mt-1 text-sm text-indigo-600">Ждём остальных игроков…</p>
           </div>
         </template>
-        <template v-else-if="voted">
+        <template v-else-if="hasVoted">
           <div class="rounded-lg bg-emerald-50 px-4 py-6 text-center">
             <p class="text-lg font-semibold text-emerald-700">Проголосовано</p>
           </div>
@@ -425,7 +463,7 @@ onMounted(() => {
             Готово
           </AppButton>
           <AppButton
-            v-else-if="phase === 'ROUND_VOTING' && !isActivePlayer && !voted && votedOptionId !== null"
+            v-else-if="phase === 'ROUND_VOTING' && !isActivePlayer && !hasVoted && votedOptionId !== null"
             size="lg"
             data-testid="ready-button"
             :disabled="!votingReady"
