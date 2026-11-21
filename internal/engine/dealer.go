@@ -3,6 +3,7 @@ package engine
 import (
 	"math/rand"
 	"sort"
+	"sync"
 
 	"github.com/memomarium/memomarium/internal/domain/game"
 	"github.com/memomarium/memomarium/internal/domain/round"
@@ -11,6 +12,7 @@ import (
 // MemeDealer deals hands and picks random content. It is the only component
 // that uses math/rand, enabling deterministic tests via a fixed seed.
 type MemeDealer struct {
+	mu  sync.Mutex
 	rng *rand.Rand
 	// lastUsed tracks recency of meme usage (higher = more recently used).
 	lastUsed map[string]int
@@ -35,8 +37,17 @@ func Shuffle[T any](rng *rand.Rand, slice []T) {
 	})
 }
 
+// ShuffleVoteOptions safely shuffles vote options using this dealer's RNG.
+func (d *MemeDealer) ShuffleVoteOptions(slice []*round.VoteOption) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	Shuffle(d.rng, slice)
+}
+
 // RandomSituation returns the text of a random enabled situation.
 func (d *MemeDealer) RandomSituation(agg *Aggregate) string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	sits := agg.EnabledSituations()
 	if len(sits) == 0 {
 		return ""
@@ -46,6 +57,8 @@ func (d *MemeDealer) RandomSituation(agg *Aggregate) string {
 
 // RandomMemeFromHand returns a random meme ID from a hand, or "" if empty.
 func (d *MemeDealer) RandomMemeFromHand(hand *round.Hand) string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	if hand == nil || len(hand.MemeIDs) == 0 {
 		return ""
 	}
@@ -73,6 +86,8 @@ func (d *MemeDealer) sortByRecency(pool []string) {
 // HandSize unique enabled memes. All hands within the cycle are disjoint,
 // guaranteeing unique Original Memes.
 func (d *MemeDealer) DealPreparationHands(agg *Aggregate) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	players := agg.ActiveGamePlayers()
 	handSize := agg.Settings.HandSize
 	needed := len(players) * handSize
@@ -112,6 +127,8 @@ func (d *MemeDealer) DealPreparationHands(agg *Aggregate) error {
 // disjoint hand of HandSize unique enabled memes, excluding all Original Memes
 // of the current cycle and preferring memes not recently shown.
 func (d *MemeDealer) DealRoundHands(agg *Aggregate, r *round.Round) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	// Exclude original memes of the current cycle.
 	excluded := map[string]bool{}
 	if agg.Cycle != nil {

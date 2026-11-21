@@ -150,7 +150,7 @@ func (e *Engine) advanceToRoundVoting(agg *Aggregate, r *round.Round, now time.T
 			IsOriginal:        false,
 		})
 	}
-	Shuffle(e.dealer.rng, options)
+	e.dealer.ShuffleVoteOptions(options)
 	for i, o := range options {
 		o.Number = i + 1
 	}

@@ -1,6 +1,10 @@
 package engine
 
-import "context"
+import (
+	"context"
+	"sync/atomic"
+	"time"
+)
 
 // Engine implements the game state machine. It is pure-ish: it operates on an
 // in-memory aggregate, mutating it in place and returning events. It does not
@@ -9,9 +13,24 @@ type Engine struct {
 	dealer *MemeDealer
 }
 
-// New returns an Engine with a deterministically seeded MemeDealer.
+var productionSeedCounter atomic.Int64
+
+func productionSeed() int64 {
+	for {
+		previous := productionSeedCounter.Load()
+		candidate := time.Now().UnixNano()
+		if candidate <= previous {
+			candidate = previous + 1
+		}
+		if productionSeedCounter.CompareAndSwap(previous, candidate) {
+			return candidate
+		}
+	}
+}
+
+// New returns an Engine with a varying production seed.
 func New() *Engine {
-	return &Engine{dealer: NewMemeDealer(1)}
+	return &Engine{dealer: NewMemeDealer(productionSeed())}
 }
 
 // NewWithDealer returns an Engine using the given MemeDealer.
