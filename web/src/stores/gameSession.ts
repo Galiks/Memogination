@@ -20,9 +20,9 @@ export const useGameSessionStore = defineStore('gameSession', () => {
     revision.value = newRevision
   }
 
-  async function resync(): Promise<void> {
+  async function resync(screen = false): Promise<void> {
     if (!currentRoomCode.value) return
-    const snap = await apiClient.getState(currentRoomCode.value)
+    const snap = await apiClient.getState(currentRoomCode.value, screen)
     setSnapshot(snap)
   }
 

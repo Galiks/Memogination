@@ -17,6 +17,7 @@ const (
 	EventHostTransferred   = "HOST_TRANSFERRED"
 	EventForceResolved     = "FORCE_RESOLVED"
 	EventTimeoutApplied    = "TIMEOUT_APPLIED"
+	EventRoomReset         = "ROOM_RESET"
 )
 
 // Event describes a state change produced by applying a command.

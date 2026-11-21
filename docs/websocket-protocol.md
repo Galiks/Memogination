@@ -34,7 +34,7 @@ viewer-appropriate projection.
 ```json
 {
   "type": "SNAPSHOT",
-  "snapshot": { "revision": 3, "phase": "ROUND_VOTING", "...": "..." }
+  "snapshot": { "revision": 3, "phase": "ROUND_VOTING", "phaseDeadlineAt": "2026-08-22T20:15:00Z", "...": "..." }
 }
 ```
 
@@ -45,6 +45,11 @@ The projection depends on the viewer:
 | Player  | PlayerSnapshot  | Includes private hand / prepared turn.  |
 | Admin   | HostSnapshot    | Admin controls, no hidden answers.      |
 | Screen  | ScreenSnapshot  | Public data only, no private hands.     |
+
+Every snapshot carries `phaseDeadlineAt` (RFC3339 UTC). It is the server-side
+deadline of the current phase and is empty when the phase has no timer
+(`0` = no timer). Clients display a countdown from this value and must never
+invent their own deadline (spec §74).
 
 #### `STATE_UPDATED`
 
@@ -60,12 +65,25 @@ command is applied or a phase times out).
 
 Clients should re-fetch the full snapshot via
 `GET /api/v1/rooms/{code}/state` (or rely on the next `SNAPSHOT`) after
-receiving this message.
+receiving this message. Screen clients must re-fetch with the same `?screen=1`
+query flag to get the public projection.
 
 ### Client → Server
 
 Inbound messages are currently ignored. All game actions are performed through
 the REST command endpoint.
+
+## Session revocation (kick / leave)
+
+When a player is kicked or leaves, the server revokes their session and
+terminates their live WebSocket with close code `4000` ("session revoked").
+Clients must treat this close code differently from a network drop:
+
+- do **not** attempt to reconnect (every attempt would be rejected with
+  `INVALID_SESSION`);
+- return the player to the join screen.
+
+All other close codes follow the normal reconnect & backoff behaviour below.
 
 ## Reconnect & backoff
 

@@ -14,6 +14,7 @@ const (
 	CommandLeaveRoom         = "LEAVE_ROOM"
 	CommandKickPlayer        = "KICK_PLAYER"
 	CommandTimeoutPhase      = "TIMEOUT_PHASE"
+	CommandStartNewGame      = "START_NEW_GAME"
 )
 
 // Command is a single action applied to the aggregate by the engine.

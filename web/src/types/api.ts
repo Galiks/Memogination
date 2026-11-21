@@ -14,6 +14,16 @@ export interface RoomDTO {
   revision: number
 }
 
+export interface RoomSummary {
+  id: string
+  code: string
+  state: string
+  revision: number
+  createdAt: string
+  closedAt: string | null
+  playerCount: number
+}
+
 export interface ScoreConfigDTO {
   allGuessedActivePlayer: number
   allGuessedGuesser: number
@@ -88,6 +98,8 @@ export interface GameSnapshot {
   phase: string
   actor: ActorDTO
   phaseData: Record<string, unknown>
+  /** RFC3339 deadline of the current phase, or empty when there is no timer. */
+  phaseDeadlineAt?: string
 }
 
 export interface GameEvent {

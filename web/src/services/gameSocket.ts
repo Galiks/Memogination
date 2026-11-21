@@ -11,9 +11,14 @@ interface SocketMessage {
 
 const RECONNECT_DELAYS_MS = [1000, 2000, 4000, 8000, 10000, 10000]
 
+// Close code sent by the server when the player's session is revoked (kicked
+// or left). Unlike a network drop this must NOT trigger reconnection.
+export const SESSION_REVOKED_CLOSE_CODE = 4000
+
 type SnapshotListener = (snapshot: GameSnapshot) => void
 type StateUpdatedListener = (revision: number) => void
 type StatusListener = (status: SocketStatus) => void
+type SessionRevokedListener = () => void
 
 class GameSocket {
   private ws: WebSocket | null = null
@@ -26,6 +31,8 @@ class GameSocket {
   private snapshotListeners = new Set<SnapshotListener>()
   private stateUpdatedListeners = new Set<StateUpdatedListener>()
   private statusListeners = new Set<StatusListener>()
+  private sessionRevokedListeners = new Set<SessionRevokedListener>()
+  private probeListeners = new Set<SessionRevokedListener>()
 
   connect(roomCode: string, options: { screen?: boolean } = {}): void {
     this.roomCode = roomCode
@@ -63,6 +70,16 @@ class GameSocket {
     return () => this.statusListeners.delete(cb)
   }
 
+  onSessionRevoked(cb: SessionRevokedListener): () => void {
+    this.sessionRevokedListeners.add(cb)
+    return () => this.sessionRevokedListeners.delete(cb)
+  }
+
+  onProbe(cb: SessionRevokedListener): () => void {
+    this.probeListeners.add(cb)
+    return () => this.probeListeners.delete(cb)
+  }
+
   private open(): void {
     if (!this.roomCode) return
     const query = this.screen ? '?screen=1' : ''
@@ -91,9 +108,17 @@ class GameSocket {
       }
     }
 
-    this.ws.onclose = () => {
+    this.ws.onclose = (event: CloseEvent) => {
       this.ws = null
       if (this.closedByUser) return
+      // The server closes the socket with this code when the session is
+      // revoked (kick/leave): reconnecting is pointless because every
+      // subsequent attempt would be rejected.
+      if (event.code === SESSION_REVOKED_CLOSE_CODE) {
+        this.emitStatus('closed')
+        this.sessionRevokedListeners.forEach((cb) => cb())
+        return
+      }
       this.scheduleReconnect()
     }
 
@@ -106,6 +131,13 @@ class GameSocket {
     const delay = RECONNECT_DELAYS_MS[Math.min(this.reconnectAttempt, RECONNECT_DELAYS_MS.length - 1)]
     this.reconnectAttempt += 1
     this.emitStatus('reconnecting')
+    // After a few consecutive failed reconnect attempts the connection may
+    // never open again because the session was revoked while the socket was
+    // down (the server rejects the upgrade, so no close frame is ever
+    // delivered). Let subscribers probe the session via REST to surface that.
+    if (this.reconnectAttempt >= 3) {
+      this.probeListeners.forEach((cb) => cb())
+    }
     this.reconnectTimer = window.setTimeout(() => this.open(), delay)
   }
 

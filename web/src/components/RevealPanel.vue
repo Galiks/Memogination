@@ -16,6 +16,13 @@ const memeById = computed(() => {
   return map
 })
 
+// gamePlayerId -> delta, so the leaderboard can show the round's score change.
+const deltas = computed<Record<string, number>>(() => {
+  const out: Record<string, number> = {}
+  for (const d of props.reveal.scoreDeltas ?? []) out[d.gamePlayerId] = d.delta
+  return out
+})
+
 function meme(id?: string): MemeDTO | null {
   if (!id) return null
   return memeById.value.get(id) ?? null
@@ -60,7 +67,9 @@ function meme(id?: string): MemeDTO | null {
             <MemeImage v-if="meme(option.memeId)" :path="meme(option.memeId)!.thumbnailPath" />
           </div>
           <div class="min-w-0 flex-1">
-            <p class="truncate text-sm text-slate-800">{{ option.ownerGamePlayerId }}</p>
+            <p class="truncate text-sm text-slate-800">
+              {{ option.ownerDisplayName || option.ownerGamePlayerId }}
+            </p>
             <p class="text-xs text-slate-400">
               {{ option.votes }} голос(ов)
               <span v-if="option.isOriginal" class="font-semibold text-amber-600">· оригинал</span>
@@ -110,7 +119,7 @@ function meme(id?: string): MemeDTO | null {
       <h3 class="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-400">
         Таблица лидеров
       </h3>
-      <Leaderboard :entries="reveal.leaderboard ?? []" />
+      <Leaderboard :entries="reveal.leaderboard ?? []" :deltas="deltas" />
     </div>
   </div>
 </template>

@@ -8,6 +8,7 @@ import type {
   HealthDTO,
   MemeDTO,
   NetworkAddressesDTO,
+  RoomSummary,
   SituationDTO,
 } from '@/types/api'
 
@@ -84,6 +85,12 @@ export const apiClient = {
   },
   createRoom(name: string): Promise<{ id: string; code: string; revision: number; state: string; createdAt: string }> {
     return request('/rooms', { method: 'POST', ...jsonBody({ name }) })
+  },
+  listRooms(): Promise<RoomSummary[]> {
+    return request('/rooms')
+  },
+  deleteRoom(code: string): Promise<{ deleted: boolean }> {
+    return request(`/rooms/${encodeURIComponent(code)}`, { method: 'DELETE' })
   },
   getState(code: string, screen = false): Promise<GameSnapshot> {
     const query = screen ? '?screen=1' : ''

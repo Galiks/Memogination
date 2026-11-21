@@ -2,6 +2,8 @@ package engine
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/binary"
 	"sync/atomic"
 	"time"
 )
@@ -11,6 +13,11 @@ import (
 // touch HTTP/WS/DB directly.
 type Engine struct {
 	dealer *MemeDealer
+}
+
+// New returns an Engine with a randomly seeded MemeDealer.
+func New() *Engine {
+	return &Engine{dealer: NewMemeDealer(randomSeed())}
 }
 
 var productionSeedCounter atomic.Int64
@@ -28,9 +35,14 @@ func productionSeed() int64 {
 	}
 }
 
-// New returns an Engine with a varying production seed.
-func New() *Engine {
-	return &Engine{dealer: NewMemeDealer(productionSeed())}
+// randomSeed returns a cryptographically random int64 used to seed the dealer
+// in production. Tests use NewWithDealer with a fixed seed for determinism.
+func randomSeed() int64 {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err == nil {
+		return int64(binary.LittleEndian.Uint64(b[:]))
+	}
+	return 1
 }
 
 // NewWithDealer returns an Engine using the given MemeDealer.
@@ -62,6 +74,8 @@ func (e *Engine) Handle(ctx context.Context, agg *Aggregate, cmd Command) ([]Eve
 		return e.kickPlayer(ctx, agg, cmd)
 	case CommandTimeoutPhase:
 		return e.timeoutPhase(ctx, agg, cmd)
+	case CommandStartNewGame:
+		return e.startNewGame(ctx, agg, cmd)
 	default:
 		return nil, ErrInvalidCommand
 	}

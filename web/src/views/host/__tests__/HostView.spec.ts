@@ -19,6 +19,8 @@ vi.mock('@/services/apiClient', () => ({
     getNetworkAddresses: vi.fn(),
     getState: vi.fn(),
     createRoom: vi.fn(),
+    listRooms: vi.fn(),
+    deleteRoom: vi.fn(),
     updateSettings: vi.fn(),
     listMemes: vi.fn(),
     listSituations: vi.fn(),
@@ -33,6 +35,8 @@ vi.mock('@/services/gameSocket', () => ({
     onSnapshot: vi.fn(() => () => {}),
     onStateUpdated: vi.fn(() => () => {}),
     onStatus: vi.fn(() => () => {}),
+    onSessionRevoked: vi.fn(() => () => {}),
+    onProbe: vi.fn(() => () => {}),
   },
 }))
 
@@ -90,6 +94,7 @@ describe('HostView', () => {
     setActivePinia(createPinia())
     vi.clearAllMocks()
     localStorage.clear()
+    vi.mocked(apiClient.listRooms).mockResolvedValue([])
   })
 
   it('enables the start button when enough players have joined', async () => {

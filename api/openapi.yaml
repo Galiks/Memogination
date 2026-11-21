@@ -53,7 +53,7 @@ paths:
           $ref: '#/components/responses/Error'
   /api/v1/rooms:
     post:
-      summary: Create a new room
+      summary: Create a new room (admin only)
       operationId: createRoom
       requestBody:
         required: true
@@ -84,7 +84,52 @@ paths:
                   createdAt:
                     type: string
                     format: date-time
-        '400':
+        '403':
+          $ref: '#/components/responses/Error'
+    get:
+      summary: List all rooms (admin only)
+      operationId: listRooms
+      responses:
+        '200':
+          description: Room summaries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id:
+                      type: string
+                    code:
+                      type: string
+                    state:
+                      type: string
+                    revision:
+                      type: integer
+                    createdAt:
+                      type: string
+                      format: date-time
+                    closedAt:
+                      type: string
+                      format: date-time
+                      nullable: true
+                    playerCount:
+                      type: integer
+        '403':
+          $ref: '#/components/responses/Error'
+  /api/v1/rooms/{code}:
+    delete:
+      summary: Delete a room and all of its data (admin only)
+      operationId: deleteRoom
+      parameters:
+        - $ref: '#/components/parameters/Code'
+      responses:
+        '200':
+          description: Deleted
+        '403':
+          $ref: '#/components/responses/Error'
+        '404':
           $ref: '#/components/responses/Error'
   /api/v1/rooms/{code}/join:
     post:
@@ -212,6 +257,11 @@ paths:
     put:
       summary: Update room settings (admin only)
       operationId: updateSettings
+      description: >-
+        Partial update: only fields present in the request body are changed.
+        Absent fields keep their current value, so a client may send a single
+        field (e.g. {"infiniteGame": true}). All fields are validated against
+        the allowed ranges; timers use 0 to mean "no timer".
       parameters:
         - $ref: '#/components/parameters/Code'
       requestBody:
@@ -484,6 +534,9 @@ components:
           type: object
         phaseData:
           type: object
+        phaseDeadlineAt:
+          type: string
+          description: RFC3339 deadline of the current phase; empty when there is no timer.
     Event:
       type: object
       properties:

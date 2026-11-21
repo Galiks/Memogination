@@ -48,11 +48,91 @@ func (q queries) ListRoomsByState(ctx context.Context, state room.RoomState) ([]
 	return out, rows.Err()
 }
 
+func (q queries) ListRooms(ctx context.Context) ([]room.Room, error) {
+	rows, err := q.q.QueryContext(ctx, `
+		SELECT id, code, revision, state, created_at, closed_at FROM rooms ORDER BY created_at ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []room.Room
+	for rows.Next() {
+		r, err := q.scanRoomRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 func (q queries) UpdateRoom(ctx context.Context, r room.Room) error {
 	_, err := q.q.ExecContext(ctx, `
 		UPDATE rooms SET code = ?, revision = ?, state = ?, created_at = ?, closed_at = ?
 		WHERE id = ?`,
 		r.Code, r.Revision, string(r.State), r.CreatedAt.UTC().Format(timeFmt), nullableTime(r.ClosedAt), r.ID)
+	return err
+}
+
+// DeleteRoom removes a room and every row referencing it. Foreign keys are not
+// declared ON DELETE CASCADE, so child rows must be deleted explicitly in
+// FK-safe order.
+func (q queries) DeleteRoom(ctx context.Context, roomID string) error {
+	if err := q.DeleteGameByRoom(ctx, roomID); err != nil {
+		return err
+	}
+	if _, err := q.q.ExecContext(ctx, `
+		DELETE FROM player_sessions WHERE player_id IN (SELECT id FROM players WHERE room_id = ?)`, roomID); err != nil {
+		return err
+	}
+	if _, err := q.q.ExecContext(ctx, `DELETE FROM players WHERE room_id = ?`, roomID); err != nil {
+		return err
+	}
+	if _, err := q.q.ExecContext(ctx, `DELETE FROM room_settings WHERE room_id = ?`, roomID); err != nil {
+		return err
+	}
+	if _, err := q.q.ExecContext(ctx, `DELETE FROM processed_commands WHERE room_id = ?`, roomID); err != nil {
+		return err
+	}
+	_, err := q.q.ExecContext(ctx, `DELETE FROM rooms WHERE id = ?`, roomID)
+	return err
+}
+
+// DeleteGameByRoom removes all games of a room and their child rows. It is used
+// both when deleting a room and when resetting a finished room to LOBBY.
+func (q queries) DeleteGameByRoom(ctx context.Context, roomID string) error {
+	// Dealt hands reference game_cycles of the room's games.
+	if _, err := q.q.ExecContext(ctx, `
+		DELETE FROM dealt_hands WHERE cycle_id IN (
+			SELECT id FROM game_cycles WHERE game_id IN (SELECT id FROM games WHERE room_id = ?))`, roomID); err != nil {
+		return err
+	}
+	// Round child rows reference the room's rounds.
+	for _, child := range []string{"round_scores", "votes", "vote_options", "round_submissions"} {
+		if _, err := q.q.ExecContext(ctx, `
+			DELETE FROM `+child+` WHERE round_id IN (
+				SELECT id FROM rounds WHERE game_id IN (SELECT id FROM games WHERE room_id = ?))`, roomID); err != nil {
+			return err
+		}
+	}
+	if _, err := q.q.ExecContext(ctx, `
+		DELETE FROM rounds WHERE game_id IN (SELECT id FROM games WHERE room_id = ?)`, roomID); err != nil {
+		return err
+	}
+	if _, err := q.q.ExecContext(ctx, `
+		DELETE FROM prepared_turns WHERE cycle_id IN (
+			SELECT id FROM game_cycles WHERE game_id IN (SELECT id FROM games WHERE room_id = ?))`, roomID); err != nil {
+		return err
+	}
+	if _, err := q.q.ExecContext(ctx, `
+		DELETE FROM game_cycles WHERE game_id IN (SELECT id FROM games WHERE room_id = ?)`, roomID); err != nil {
+		return err
+	}
+	if _, err := q.q.ExecContext(ctx, `
+		DELETE FROM game_players WHERE game_id IN (SELECT id FROM games WHERE room_id = ?)`, roomID); err != nil {
+		return err
+	}
+	_, err := q.q.ExecContext(ctx, `DELETE FROM games WHERE room_id = ?`, roomID)
 	return err
 }
 
@@ -116,6 +196,16 @@ func (q queries) UpdatePlayer(ctx context.Context, p player.Player) error {
 		UPDATE players SET room_id = ?, name = ?, role = ?, connected = ?, joined_at = ?, left_at = ?
 		WHERE id = ?`,
 		p.RoomID, p.Name, string(p.Role), boolInt(p.Connected), p.JoinedAt.UTC().Format(timeFmt), nullableTime(p.LeftAt), p.ID)
+	return err
+}
+
+func (q queries) DeletePlayer(ctx context.Context, id string) error {
+	_, err := q.q.ExecContext(ctx, `DELETE FROM players WHERE id = ?`, id)
+	return err
+}
+
+func (q queries) DeletePlayerSessionsByPlayer(ctx context.Context, playerID string) error {
+	_, err := q.q.ExecContext(ctx, `DELETE FROM player_sessions WHERE player_id = ?`, playerID)
 	return err
 }
 

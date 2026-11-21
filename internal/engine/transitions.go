@@ -738,6 +738,40 @@ func (e *Engine) resolvePhase(agg *Aggregate, now time.Time) ([]Event, error) {
 	}
 }
 
+// --- START_NEW_GAME ---
+
+// startNewGame resets a finished room (game over) back to LOBBY so the host
+// can start a fresh game with the same players. It requires a Local Admin and
+// a room whose game has finished (Room.State == CLOSED). All per-game state is
+// cleared; room players are kept.
+func (e *Engine) startNewGame(ctx context.Context, agg *Aggregate, cmd Command) ([]Event, error) {
+	if !cmd.IsAdmin {
+		return nil, ErrNotAllowed
+	}
+	if agg.Room == nil || agg.Room.State != room.StateClosed || agg.Game == nil || agg.Game.State != game.StateFinished {
+		return nil, ErrInvalidPhase
+	}
+
+	agg.Game = nil
+	agg.GamePlayers = nil
+	agg.Cycle = nil
+	agg.PreparedTurns = nil
+	agg.Rounds = nil
+	agg.Hands = nil
+	agg.Submissions = nil
+	agg.VoteOptions = nil
+	agg.Votes = nil
+	agg.RoundScores = nil
+	agg.Phase = ""
+	agg.PhaseDeadlineAt = nil
+	agg.Room.State = room.StateLobby
+	agg.Room.ClosedAt = nil
+
+	return []Event{
+		{Type: EventRoomReset, Revision: agg.Room.Revision, Data: map[string]any{"roomCode": agg.Room.Code}},
+	}, nil
+}
+
 // --- LEAVE_ROOM / KICK_PLAYER ---
 
 func (e *Engine) leaveRoom(ctx context.Context, agg *Aggregate, cmd Command) ([]Event, error) {

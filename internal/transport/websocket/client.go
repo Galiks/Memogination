@@ -8,13 +8,27 @@ import (
 	"github.com/coder/websocket"
 )
 
+// SessionRevokedCloseCode is the WebSocket close code sent when a player's
+// session is revoked (kicked or left): the client distinguishes it from a
+// network drop and must not attempt to reconnect.
+const SessionRevokedCloseCode = 4000
+
 // Client is a single WebSocket connection bound to a room. It runs a read pump
 // (discarding inbound messages) and a write pump (draining the send channel).
 type Client struct {
 	conn   *websocket.Conn
 	roomID string
-	send   chan []byte
-	hub    *Hub
+	// PlayerID is the authenticated player this connection belongs to, or "" for
+	// admin/screen viewers. It lets the hub terminate a specific player's
+	// connection when their session is revoked.
+	PlayerID string
+	send     chan []byte
+	hub      *Hub
+
+	// sendMu guards send/sendClosed so a Send racing a session-revoked close
+	// can never write to a closed channel.
+	sendMu     sync.Mutex
+	sendClosed bool
 
 	// OnDisconnect is invoked once when the connection fully closes. It is
 	// used to mark the associated player disconnected.
@@ -34,8 +48,14 @@ func NewClient(conn *websocket.Conn, roomID string, hub *Hub) *Client {
 }
 
 // Send queues a message for delivery. It is non-blocking; if the client's
-// buffer is full the message is dropped.
+// buffer is full the message is dropped. Safe to call concurrently with a
+// session-revoked close (which closes the send channel).
 func (c *Client) Send(data []byte) {
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+	if c.sendClosed {
+		return
+	}
 	select {
 	case c.send <- data:
 	default:
@@ -55,10 +75,24 @@ func (c *Client) Run() {
 // connection exactly once. OnDisconnect fires only after the connection is
 // fully closed (both pumps have exited).
 func (c *Client) close() {
+	c.closeWithCode(websocket.StatusNormalClosure, "")
+}
+
+// closeForSessionRevoked terminates the connection because the player's session
+// was revoked (kick/leave), using a custom close code the client can recognize
+// so it stops reconnecting.
+func (c *Client) closeForSessionRevoked() {
+	c.closeWithCode(websocket.StatusCode(SessionRevokedCloseCode), "session revoked")
+}
+
+func (c *Client) closeWithCode(code websocket.StatusCode, reason string) {
 	c.closeOnce.Do(func() {
 		c.hub.Unregister(c)
+		c.sendMu.Lock()
+		c.sendClosed = true
 		close(c.send)
-		_ = c.conn.Close(websocket.StatusNormalClosure, "")
+		c.sendMu.Unlock()
+		_ = c.conn.Close(code, reason)
 		if c.OnDisconnect != nil {
 			c.OnDisconnect()
 		}
