@@ -3,6 +3,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import type { GameSnapshot, MemeDTO } from '@/types/api'
 import PlayerView from '@/views/player/PlayerView.vue'
+import { useConnectionStore } from '@/stores/connection'
 
 vi.mock('@/services/apiClient', () => ({
   ApiError: class ApiError extends Error {
@@ -171,9 +172,13 @@ describe('PlayerView', () => {
     vi.mocked(apiClient.reconnect).mockResolvedValue(snapshot)
     vi.mocked(apiClient.listMemes).mockResolvedValue([meme])
 
-    const wrapper = mount(PlayerView, { global: { plugins: [createPinia()] } })
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const wrapper = mount(PlayerView, { global: { plugins: [pinia] } })
     await flushPromises()
     await flushPromises()
+    useConnectionStore(pinia).status = 'connected'
+    await wrapper.vm.$nextTick()
 
     const ready = wrapper.find('[data-testid="ready-button"]')
     expect(ready.exists()).toBe(true)

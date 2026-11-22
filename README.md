@@ -26,6 +26,9 @@ go run ./cmd/memomarium --data-dir ./data
 The server listens on `:8080` by default. Open `http://localhost:8080/host` to
 create a room; players join at `http://<your-lan-ip>:8080/play/<code>`.
 
+If players cannot open the game, see the
+[network troubleshooting guide](docs/network-troubleshooting.md) (Russian).
+
 ## Build the Windows executable
 
 ```powershell

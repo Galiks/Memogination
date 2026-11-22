@@ -262,7 +262,7 @@ function onTouchEnd(e: TouchEvent): void {
           :key="meme.id"
           type="button"
           data-testid="meme-dot"
-          class="h-2 rounded-full transition-all"
+          class="min-h-11 min-w-11 rounded-full p-4 transition-all"
           :class="i === currentIndex ? 'w-5 bg-indigo-600' : 'w-2 bg-slate-300 hover:bg-slate-400'"
           :aria-label="`Мем ${i + 1}`"
           :aria-current="i === currentIndex ? 'true' : undefined"
@@ -319,7 +319,7 @@ function onTouchEnd(e: TouchEvent): void {
             type="button"
             ref="closeBtnEl"
             data-testid="meme-fullscreen-close"
-            class="flex h-10 w-10 items-center justify-center rounded-full bg-slate-100 text-slate-600 transition hover:bg-slate-200 hover:text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-300"
+            class="flex h-11 w-11 items-center justify-center rounded-full bg-slate-100 text-slate-600 transition hover:bg-slate-200 hover:text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-300"
             aria-label="Закрыть"
             @click.stop="onCloseFullscreen"
           >

@@ -3,6 +3,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import type { GameSnapshot, RoomPlayerDTO } from '@/types/api'
 import HostView from '@/views/host/HostView.vue'
+import { useConnectionStore } from '@/stores/connection'
 
 vi.mock('@/services/apiClient', () => ({
   ApiError: class ApiError extends Error {
@@ -105,9 +106,13 @@ describe('HostView', () => {
     vi.mocked(apiClient.listSituations).mockResolvedValue([])
     localStorage.setItem('memomarium_host_room', 'ABC')
 
-    const wrapper = mount(HostView, { global: { plugins: [createPinia()] } })
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const wrapper = mount(HostView, { global: { plugins: [pinia] } })
     await flushPromises()
     await flushPromises()
+    useConnectionStore(pinia).status = 'connected'
+    await wrapper.vm.$nextTick()
 
     const startButton = wrapper
       .findAll('button')

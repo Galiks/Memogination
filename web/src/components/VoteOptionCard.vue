@@ -17,7 +17,7 @@ const emit = defineEmits<{ select: [] }>()
     type="button"
     data-testid="vote-option"
     :disabled="disabled"
-    class="relative flex flex-col items-center gap-2 rounded-xl border-2 bg-white p-2 transition-colors disabled:cursor-not-allowed disabled:opacity-40"
+    class="relative flex min-h-44 flex-col items-center gap-2 rounded-2xl border-2 bg-white p-3 shadow-sm transition-colors disabled:cursor-not-allowed disabled:opacity-40"
     :class="
       selected
         ? 'border-indigo-500 ring-2 ring-indigo-300'

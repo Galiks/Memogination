@@ -28,12 +28,20 @@ import SituationInput from '@/components/SituationInput.vue'
 import VoteOptionCard from '@/components/VoteOptionCard.vue'
 import RevealPanel from '@/components/RevealPanel.vue'
 import Leaderboard from '@/components/Leaderboard.vue'
+import AudioControls from '@/components/AudioControls.vue'
+import AudioUnlockPrompt from '@/components/AudioUnlockPrompt.vue'
+import PhaseTransition from '@/components/PhaseTransition.vue'
+import ConfettiLayer from '@/components/ConfettiLayer.vue'
+import { usePhaseEffects } from '@/composables/usePhaseEffects'
+import { storeToRefs } from 'pinia'
 
 const route = useRoute()
 const roomCode = String(route.params.roomCode ?? '')
 
 const session = useGameSessionStore()
 const connection = useConnectionStore()
+const { snapshot: snapshotRef } = storeToRefs(session)
+const { phaseTransition, showConfetti } = usePhaseEffects(snapshotRef)
 const { memes: catalogMemes, get: getMeme, load: loadMemes } = useMemeCatalog()
 const { request: wakeRequest, release: wakeRelease } = useWakeLock()
 
@@ -103,6 +111,7 @@ const winners = computed(() => {
 })
 
 const activePhases = ['PREPARATION', 'ROUND_SELECTION', 'ROUND_VOTING']
+const canSendCommands = computed(() => connection.status === 'connected')
 
 // Server-provided phase deadline (RFC3339) for the countdown, in epoch ms.
 const phaseDeadlineMs = computed(() => {
@@ -261,7 +270,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="min-h-screen bg-slate-50 pb-24">
+  <div class="player-shell min-h-screen pb-[calc(6rem+env(safe-area-inset-bottom))]">
     <!-- Join form -->
     <div v-if="!joined" class="mx-auto flex min-h-screen max-w-md flex-col justify-center p-6">
       <AppCard>
@@ -292,6 +301,10 @@ onMounted(() => {
         </div>
         <ConnectionBanner />
       </div>
+      <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <AudioUnlockPrompt />
+        <AudioControls />
+      </div>
 
       <p v-if="actionError" class="mb-3 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
         {{ actionError }}
@@ -314,7 +327,7 @@ onMounted(() => {
           Ждём игроков… ({{ snapshot?.players.length ?? 0 }}/{{ snapshot?.settings.minPlayers ?? '?' }})
         </p>
         <div v-if="isHost" class="mt-4">
-          <AppButton size="lg" class="w-full" :disabled="!canStart" @click="startGame">
+          <AppButton size="lg" class="w-full" :disabled="!canStart || !canSendCommands" @click="startGame">
             Начать игру
           </AppButton>
           <p v-if="!canStart" class="mt-2 text-center text-xs text-slate-400">
@@ -439,16 +452,16 @@ onMounted(() => {
       <!-- Bottom action bar -->
       <div
         v-if="joined && roomState !== 'CLOSED'"
-        class="fixed inset-x-0 bottom-0 border-t border-slate-200 bg-white/95 p-4 backdrop-blur"
+        class="fixed inset-x-0 bottom-0 border-t border-violet-200 bg-white/95 px-4 pb-[calc(1rem+env(safe-area-inset-bottom))] pt-3 backdrop-blur"
       >
         <div class="mx-auto flex max-w-3xl items-center gap-3">
-          <AppButton variant="ghost" size="sm" @click="leaveRoom">Выйти</AppButton>
+          <AppButton variant="ghost" size="sm" :disabled="!canSendCommands" @click="leaveRoom">Выйти</AppButton>
           <div class="flex-1" />
           <AppButton
             v-if="phase === 'PREPARATION' && !prepData.preparedTurn"
             size="lg"
             data-testid="ready-button"
-            :disabled="!prepReady"
+            :disabled="!prepReady || !canSendCommands"
             @click="submitPreparation"
           >
             Готово
@@ -457,7 +470,7 @@ onMounted(() => {
             v-else-if="phase === 'ROUND_SELECTION' && !isActivePlayer && !selectionData.submitted"
             size="lg"
             data-testid="ready-button"
-            :disabled="!selectionReady"
+            :disabled="!selectionReady || !canSendCommands"
             @click="submitRoundMeme"
           >
             Готово
@@ -466,7 +479,7 @@ onMounted(() => {
             v-else-if="phase === 'ROUND_VOTING' && !isActivePlayer && !hasVoted && votedOptionId !== null"
             size="lg"
             data-testid="ready-button"
-            :disabled="!votingReady"
+            :disabled="!votingReady || !canSendCommands"
             @click="submitVote"
           >
             Готово
@@ -474,6 +487,7 @@ onMounted(() => {
           <AppButton
             v-else-if="phase === 'ROUND_RESULTS' && isHost"
             size="lg"
+            :disabled="!canSendCommands"
             @click="nextRound"
           >
             Следующий раунд
@@ -481,6 +495,7 @@ onMounted(() => {
           <AppButton
             v-else-if="phase === 'CYCLE_RESULTS' && isHost"
             size="lg"
+            :disabled="!canSendCommands"
             @click="startNextCycle"
           >
             Следующий цикл
@@ -488,5 +503,7 @@ onMounted(() => {
         </div>
       </div>
     </div>
+    <PhaseTransition :phase="phaseTransition" :active="!!phaseTransition" />
+    <ConfettiLayer :active="showConfetti" />
   </div>
 </template>

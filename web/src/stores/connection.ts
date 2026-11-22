@@ -31,7 +31,7 @@ export const useConnectionStore = defineStore('connection', () => {
     roomCode.value = code
     screen.value = options.screen ?? false
     const session = useGameSessionStore()
-    session.currentRoomCode = code
+    session.beginRoom(code)
     session.sessionStatus = options.screen ? 'connected' : 'connecting'
     gameSocket.connect(code, options)
   }
@@ -55,7 +55,7 @@ export const useConnectionStore = defineStore('connection', () => {
   })
 
   gameSocket.onSnapshot((snap) => {
-    useGameSessionStore().setSnapshot(snap)
+    useGameSessionStore().setSnapshot(snap, roomCode.value)
   })
 
   // The server closes the socket with the session-revoked code when the player
@@ -71,9 +71,12 @@ export const useConnectionStore = defineStore('connection', () => {
   // session over REST so a revocation still surfaces as session-lost.
   gameSocket.onProbe(() => {
     if (screen.value || !roomCode.value) return
+    const code = roomCode.value
     void apiClient
-      .reconnect(roomCode.value)
-      .then((snap) => useGameSessionStore().setSnapshot(snap))
+      .reconnect(code)
+      .then((snap) => {
+        if (roomCode.value === code && !screen.value) useGameSessionStore().setSnapshot(snap, code)
+      })
       .catch((err: unknown) => {
         if (err instanceof ApiError && SESSION_LOST_CODES.has(err.code)) notifySessionLost()
       })

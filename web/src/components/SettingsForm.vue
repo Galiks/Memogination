@@ -3,7 +3,7 @@ import { reactive, ref, watch } from 'vue'
 import type { GameSettingsDTO } from '@/types/api'
 import AppButton from '@/components/AppButton.vue'
 
-const props = defineProps<{ settings: GameSettingsDTO }>()
+const props = defineProps<{ settings: GameSettingsDTO; disabled?: boolean }>()
 const emit = defineEmits<{ save: [settings: GameSettingsDTO] }>()
 
 // Backend validation ranges (room.RoomSettings.Validate + spec §36):
@@ -16,13 +16,18 @@ const LIMITS = {
   timer: { min: 0, max: 3600 },
 }
 
-const form = reactive<GameSettingsDTO>({ ...props.settings })
+const cloneSettings = (settings: GameSettingsDTO): GameSettingsDTO => ({
+  ...settings,
+  scoreConfig: { ...settings.scoreConfig },
+})
+
+const form = reactive<GameSettingsDTO>(cloneSettings(props.settings))
 const errors = ref<Record<string, string>>({})
 
 watch(
   () => props.settings,
   (s) => {
-    Object.assign(form, s)
+    Object.assign(form, cloneSettings(s))
   },
 )
 
@@ -58,7 +63,7 @@ function validate(): boolean {
 
 function save(): void {
   if (!validate()) return
-  emit('save', { ...form })
+  emit('save', cloneSettings(form))
 }
 
 // Restore the Standard scoring preset (spec §39).
@@ -261,6 +266,6 @@ const timerFields: Array<{
       </div>
     </section>
 
-    <AppButton type="submit" variant="primary">Сохранить настройки</AppButton>
+    <AppButton type="submit" variant="primary" :disabled="disabled">Сохранить настройки</AppButton>
   </form>
 </template>

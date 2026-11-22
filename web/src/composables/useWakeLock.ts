@@ -7,22 +7,38 @@ import { onBeforeUnmount, ref } from 'vue'
 export function useWakeLock() {
   const supported = typeof navigator !== 'undefined' && 'wakeLock' in navigator
   const isActive = ref(false)
+  let requested = false
   let sentinel: WakeLockSentinel | null = null
+  let requestPending = false
+  let requestGeneration = 0
 
   async function request(): Promise<void> {
-    if (!supported) return
+    requested = true
+    if (!supported || requestPending || document.visibilityState !== 'visible' || isActive.value) return
+    requestPending = true
+    const generation = requestGeneration
     try {
-      sentinel = await navigator.wakeLock.request('screen')
+      const acquired = await navigator.wakeLock.request('screen')
+      if (generation !== requestGeneration || !requested) {
+        await acquired.release()
+        return
+      }
+      sentinel = acquired
       isActive.value = true
       sentinel.addEventListener?.('release', () => {
         isActive.value = false
+        sentinel = null
       })
     } catch {
       // best-effort: ignore failures
+    } finally {
+      requestPending = false
     }
   }
 
   async function release(): Promise<void> {
+    requested = false
+    requestGeneration += 1
     if (sentinel) {
       try {
         await sentinel.release()
@@ -34,7 +50,13 @@ export function useWakeLock() {
     isActive.value = false
   }
 
+  const onVisibilityChange = () => {
+    if (requested && document.visibilityState === 'visible') void request()
+  }
+  if (typeof document !== 'undefined') document.addEventListener('visibilitychange', onVisibilityChange)
+
   onBeforeUnmount(() => {
+    if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVisibilityChange)
     void release()
   })
 

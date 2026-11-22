@@ -1,1 +1,39 @@
 @import "tailwindcss";
+
+:root {
+  color-scheme: dark;
+  --mm-bg: #0b1020;
+  --mm-surface: #151c34;
+  --mm-surface-raised: #202a4a;
+  --mm-primary: #7c3aed;
+  --mm-primary-bright: #a855f7;
+  --mm-accent: #22d3ee;
+  --mm-success: #22c55e;
+  --mm-warning: #f59e0b;
+  --mm-danger: #ef4444;
+  --mm-text: #f8fafc;
+  --mm-text-muted: #cbd5e1;
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* { box-sizing: border-box; }
+body { min-width: 320px; min-height: 100vh; margin: 0; background: radial-gradient(ellipse at top, #202a4a 0, var(--mm-bg) 58%); color: var(--mm-text); }
+button, input, textarea, select { font: inherit; }
+button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 3px solid #0891b2; outline-offset: 2px; }
+.mm-shell, .player-shell { background: radial-gradient(ellipse at top, #202a4a 0, var(--mm-bg) 70%); }
+.mm-shell .text-slate-400, .player-shell .text-slate-400 { color: #64748b; }
+.mm-shell .text-slate-500, .player-shell .text-slate-500 { color: #475569; }
+.player-shell input, .player-shell textarea, .player-shell select { font-size: 16px; }
+.mm-shell > div > .mb-6 h1, .player-shell > .mx-auto > .mb-4 h1, .player-shell > .mx-auto > .mb-4 p { color: #f8fafc; }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; } }
+
+.show-screen h2 { font-size: clamp(1.8rem, 4vw, 3.5rem); line-height: 1.08; }
+.show-screen p { line-height: 1.45; }
+.show-screen .screen-vote-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: clamp(.75rem, 2vw, 1.5rem); }
+.show-screen .text-slate-900, .show-screen .text-slate-800, .show-screen .text-slate-700 { color: #f8fafc; }
+.show-screen .text-slate-600, .show-screen .text-slate-500, .show-screen .text-slate-400 { color: #cbd5e1; }
+.show-screen .bg-slate-50, .show-screen .bg-white, .show-screen .bg-amber-50 { background-color: #202a4a; }
+.show-screen .border-slate-100, .show-screen .border-slate-200 { border-color: #475569; }
+.screen-vote-grid > * { min-width: 0; }

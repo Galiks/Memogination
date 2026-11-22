@@ -14,11 +14,20 @@ import PlayerList from '@/components/PlayerList.vue'
 import SettingsForm from '@/components/SettingsForm.vue'
 import ContentManager from '@/components/ContentManager.vue'
 import Leaderboard from '@/components/Leaderboard.vue'
+import AudioControls from '@/components/AudioControls.vue'
+import AudioUnlockPrompt from '@/components/AudioUnlockPrompt.vue'
+import PhaseTransition from '@/components/PhaseTransition.vue'
+import ConfettiLayer from '@/components/ConfettiLayer.vue'
+import { usePhaseEffects } from '@/composables/usePhaseEffects'
+import { storeToRefs } from 'pinia'
 
 const HOST_ROOM_KEY = 'memomarium_host_room'
 
 const session = useGameSessionStore()
 const connection = useConnectionStore()
+const { snapshot: snapshotRef } = storeToRefs(session)
+const { phaseTransition, showConfetti } = usePhaseEffects(snapshotRef)
+const canSendCommands = computed(() => connection.status === 'connected')
 
 const isAdmin = ref<boolean | null>(null)
 const roomCode = ref('')
@@ -171,6 +180,10 @@ async function deleteRoom(code: string): Promise<void> {
 
 async function runCommand(type: string, payload?: Record<string, unknown>): Promise<void> {
   actionError.value = ''
+  if (!canSendCommands.value) {
+    actionError.value = 'Нет соединения с комнатой. Дождитесь переподключения.'
+    return
+  }
   try {
     await sendCommand(type, payload)
   } catch (err) {
@@ -185,6 +198,7 @@ async function kickPlayer(playerId: string): Promise<void> {
 
 async function startNewGame(): Promise<void> {
   actionError.value = ''
+  if (!canSendCommands.value) return
   try {
     await sendCommand('START_NEW_GAME')
     await sendCommand('START_GAME')
@@ -195,6 +209,10 @@ async function startNewGame(): Promise<void> {
 
 async function saveSettings(settings: GameSettingsDTO): Promise<void> {
   settingsError.value = ''
+  if (!canSendCommands.value) {
+    settingsError.value = 'Нет соединения с комнатой. Дождитесь переподключения.'
+    return
+  }
   try {
     await apiClient.updateSettings(roomCode.value, settings)
     await session.resync()
@@ -209,11 +227,11 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="min-h-screen bg-slate-50 p-6">
+  <div class="mm-shell min-h-screen p-4 sm:p-6">
     <div class="mx-auto max-w-4xl">
-      <div class="mb-6 flex items-center justify-between">
+      <div class="mb-6 flex flex-wrap items-center justify-between gap-3">
         <h1 class="text-2xl font-bold text-slate-900">Панель администратора</h1>
-        <ConnectionBanner />
+        <div class="flex flex-wrap items-center gap-3"><AudioUnlockPrompt /><AudioControls /><ConnectionBanner /></div>
       </div>
 
       <!-- Not admin -->
@@ -324,13 +342,13 @@ onMounted(() => {
           <AppCard v-if="isInGame" class="mb-4">
             <h2 class="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-400">Управление игрой</h2>
             <div class="flex flex-wrap gap-2">
-              <AppButton v-if="phase === 'ROUND_RESULTS'" @click="runCommand('NEXT_ROUND')">
+              <AppButton v-if="phase === 'ROUND_RESULTS'" :disabled="!canSendCommands" @click="runCommand('NEXT_ROUND')">
                 Следующий раунд
               </AppButton>
-              <AppButton v-if="phase === 'CYCLE_RESULTS'" @click="runCommand('START_NEXT_CYCLE')">
+              <AppButton v-if="phase === 'CYCLE_RESULTS'" :disabled="!canSendCommands" @click="runCommand('START_NEXT_CYCLE')">
                 Следующий цикл
               </AppButton>
-              <AppButton v-if="activePhase" variant="secondary" @click="runCommand('FORCE_RESOLVE_PHASE')">
+              <AppButton v-if="activePhase" variant="secondary" :disabled="!canSendCommands" @click="runCommand('FORCE_RESOLVE_PHASE')">
                 Принудительно завершить фазу
               </AppButton>
             </div>
@@ -339,7 +357,7 @@ onMounted(() => {
           <!-- Start game (lobby) -->
           <AppCard v-if="isLobby" class="mb-4">
             <h2 class="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-400">Игра</h2>
-            <AppButton size="lg" :disabled="!canStart" @click="runCommand('START_GAME')">
+            <AppButton size="lg" :disabled="!canStart || !canSendCommands" @click="runCommand('START_GAME')">
               Начать игру
             </AppButton>
             <p v-if="!canStart" class="mt-2 text-sm text-slate-400">
@@ -355,14 +373,14 @@ onMounted(() => {
             <p class="mb-3 text-sm text-slate-600">
               Хотите сыграть ещё раз с теми же игроками?
             </p>
-            <AppButton size="lg" @click="startNewGame">Начать игру заново</AppButton>
+            <AppButton size="lg" :disabled="!canSendCommands" @click="startNewGame">Начать игру заново</AppButton>
           </AppCard>
 
           <!-- Settings -->
           <AppCard v-if="isLobby && snapshot?.settings" class="mb-4">
             <h2 class="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-400">Настройки</h2>
             <p v-if="settingsError" class="mb-2 text-sm text-red-600">{{ settingsError }}</p>
-            <SettingsForm :settings="snapshot.settings" @save="saveSettings" />
+            <SettingsForm :settings="snapshot.settings" :disabled="!canSendCommands" @save="saveSettings" />
           </AppCard>
 
           <!-- Content -->
@@ -389,5 +407,7 @@ onMounted(() => {
         </template>
       </template>
     </div>
+    <PhaseTransition :phase="phaseTransition" :active="!!phaseTransition" />
+    <ConfettiLayer :active="showConfetti" />
   </div>
 </template>
